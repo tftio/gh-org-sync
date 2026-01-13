@@ -274,7 +274,9 @@ Uses iterative approach to avoid deep recursion."
   (let ((result ""))
     (gh/org-docs--extract-text-iter element
                                     (lambda (s) (setq result (concat result s))))
-    (gh/org-docs--strip-comment-markers (string-trim result))))
+    ;; Strip text properties and comment markers
+    (substring-no-properties
+     (gh/org-docs--strip-comment-markers (string-trim result)))))
 
 (defun gh/org-docs--extract-text-iter (element callback)
   "Extract text from ELEMENT, calling CALLBACK for each text fragment.
@@ -390,23 +392,33 @@ COUNTER is the table occurrence number."
 
 (defun gh/org-docs--paragraph-image-link (paragraph)
   "If PARAGRAPH contains only an image file link, return the path. Otherwise nil."
-  (let ((links nil)
+  (let ((image-links nil)
         (has-other-content nil))
+    ;; Find image file links
     (org-element-map paragraph 'link
       (lambda (link)
         (let ((type (org-element-property :type link))
               (path (org-element-property :path link)))
-          (when (and (string= type "file")
+          (when (and (member type '("file" "attachment"))
+                     path
                      (string-match-p "\\.\\(png\\|jpg\\|jpeg\\|gif\\|svg\\|webp\\)$" path))
-            (push path links))))
+            (push path image-links))))
       nil nil t)
-    ;; Check if there's substantial text content besides the link
-    (let ((text (gh/org-docs--extract-plain-text paragraph)))
-      (when (> (length (string-trim text)) 0)
-        (setq has-other-content t)))
-    ;; Return the image path if it's the only content
-    (when (and links (= (length links) 1) (not has-other-content))
-      (car links))))
+    ;; Check for non-link, non-whitespace content
+    (let ((contents (org-element-contents paragraph)))
+      (dolist (child contents)
+        (cond
+         ;; Plain text that isn't just whitespace
+         ((stringp child)
+          (when (string-match-p "[^[:space:]]" (substring-no-properties child))
+            (setq has-other-content t)))
+         ;; Non-link elements count as other content
+         ((and (listp child)
+               (not (eq (org-element-type child) 'link)))
+          (setq has-other-content t)))))
+    ;; Return the image path if it's the only meaningful content
+    (when (and image-links (= (length image-links) 1) (not has-other-content))
+      (car image-links))))
 
 (defun gh/org-docs--image-to-sexp (image-path parent-id counter)
   "Convert IMAGE-PATH to S-expression.
@@ -423,13 +435,28 @@ COUNTER is the image occurrence number."
           :path abs-path
           :alt-text (file-name-base image-path))))
 
+(defun gh/org-docs--src-block-to-sexp (src-block parent-id counter)
+  "Convert SRC-BLOCK element to S-expression (as monospace paragraph).
+PARENT-ID is the parent section ID.
+COUNTER is the code block occurrence number."
+  (let* ((elem-id (gh/org-docs--make-element-id parent-id "code" counter))
+         (lang (org-element-property :language src-block))
+         (value (org-element-property :value src-block))
+         ;; Clean up the value (remove trailing newline if present)
+         (text (string-trim-right value)))
+    ;; Format the entire block as code (monospace)
+    (list 'paragraph
+          :text text
+          :custom-id elem-id
+          :formatting (list (list 'code :start 0 :end (length text))))))
+
 (defun gh/org-docs--buffer-to-content ()
   "Convert current buffer content to list of content S-expressions."
   (gh/org-docs--debug "Converting buffer to content S-expressions")
   (let ((content nil)
         (current-section-id "doc")
         (counters (make-hash-table :test 'equal)))
-    (org-element-map (org-element-parse-buffer) '(headline paragraph plain-list table)
+    (org-element-map (org-element-parse-buffer) '(headline paragraph plain-list table src-block)
       (lambda (element)
         (let ((type (org-element-type element)))
           ;; Skip elements inside GDOC_METADATA section
@@ -469,6 +496,12 @@ COUNTER is the image occurrence number."
                       (count (gethash key counters 0)))
                  (puthash key (1+ count) counters)
                  (push (gh/org-docs--table-to-sexp element current-section-id count)
+                       content)))
+              ('src-block
+               (let* ((key (format "%s-code" current-section-id))
+                      (count (gethash key counters 0)))
+                 (puthash key (1+ count) counters)
+                 (push (gh/org-docs--src-block-to-sexp element current-section-id count)
                        content)))))))
       nil nil 'first-match)
     (nreverse content)))
