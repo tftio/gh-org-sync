@@ -117,19 +117,36 @@ func decodePositionMap(expr sexp.Sexp) (map[string]gdocs.Position, error) {
 
 	out := make(map[string]gdocs.Position, len(list))
 	for _, item := range list {
-		cons, ok := item.(sexp.Cons)
-		if !ok {
-			return nil, fmt.Errorf("position-map entries must be dotted pairs, got %T", item)
-		}
+		var key string
+		var plist map[sexp.Symbol]sexp.Sexp
+		var err error
 
-		key, err := decodeString(cons.Car)
-		if err != nil {
-			return nil, fmt.Errorf("position-map key: %w", err)
-		}
-
-		plist, err := decodePlist(cons.Cdr)
-		if err != nil {
-			return nil, fmt.Errorf("position-map value for %q: %w", key, err)
+		switch v := item.(type) {
+		case sexp.Cons:
+			// Dotted pair format: ("key" . (:k1 v1 :k2 v2))
+			key, err = decodeString(v.Car)
+			if err != nil {
+				return nil, fmt.Errorf("position-map key: %w", err)
+			}
+			plist, err = decodePlist(v.Cdr)
+			if err != nil {
+				return nil, fmt.Errorf("position-map value for %q: %w", key, err)
+			}
+		case sexp.List:
+			// List format: ("key" :k1 v1 :k2 v2)
+			if len(v) < 3 {
+				return nil, fmt.Errorf("position-map entry too short: %v", v)
+			}
+			key, err = decodeString(v[0])
+			if err != nil {
+				return nil, fmt.Errorf("position-map key: %w", err)
+			}
+			plist, err = decodePlist(sexp.List(v[1:]))
+			if err != nil {
+				return nil, fmt.Errorf("position-map value for %q: %w", key, err)
+			}
+		default:
+			return nil, fmt.Errorf("position-map entries must be dotted pairs or lists, got %T", item)
 		}
 
 		idx, err := decodeInt64(plist[sexp.Symbol(":gdoc-index")])
