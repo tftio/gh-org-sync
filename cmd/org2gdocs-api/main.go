@@ -9,13 +9,22 @@ import (
 	"org2gdocs/debug"
 )
 
+// Version is set at build time via -ldflags
+var Version = "dev"
+
 func main() {
 	flags := flag.NewFlagSet("org2gdocs-api", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 
 	debugFlag := flags.Bool("debug", false, "Enable debug logging (stderr)")
+	versionFlag := flags.Bool("version", false, "Print version and exit")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
+	}
+
+	if *versionFlag {
+		fmt.Printf("org2gdocs-api version %s\n", Version)
+		os.Exit(0)
 	}
 
 	args := flags.Args()
@@ -51,6 +60,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  org2gdocs-api [--debug] auth    # perform OAuth flow")
 	fmt.Fprintln(os.Stderr, "  org2gdocs-api [--debug]         # read (operation ...) from stdin")
+	fmt.Fprintln(os.Stderr, "  org2gdocs-api --version         # print version and exit")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Config:")
 	fmt.Fprintf(os.Stderr, "  %s\n", config.ConfigPath())
