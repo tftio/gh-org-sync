@@ -35,6 +35,20 @@ func PushDocument(ctx context.Context, c *Client, docID string, title string, co
 	index := int64(1) // start-of-document (UTF-16 code units)
 	pending := []*docs.Request{}
 
+	// Set reasonable document margins (1 inch = 72 points)
+	marginPt := &docs.Dimension{Magnitude: 72, Unit: "PT"}
+	pending = append(pending, &docs.Request{
+		UpdateDocumentStyle: &docs.UpdateDocumentStyleRequest{
+			DocumentStyle: &docs.DocumentStyle{
+				MarginTop:    marginPt,
+				MarginBottom: marginPt,
+				MarginLeft:   marginPt,
+				MarginRight:  marginPt,
+			},
+			Fields: "marginTop,marginBottom,marginLeft,marginRight",
+		},
+	})
+
 	flush := func() error {
 		if len(pending) == 0 {
 			return nil

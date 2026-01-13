@@ -388,6 +388,41 @@ COUNTER is the table occurrence number."
           :text (gh/org-docs--strip-comment-markers title)
           :custom-id custom-id)))
 
+(defun gh/org-docs--paragraph-image-link (paragraph)
+  "If PARAGRAPH contains only an image file link, return the path. Otherwise nil."
+  (let ((links nil)
+        (has-other-content nil))
+    (org-element-map paragraph 'link
+      (lambda (link)
+        (let ((type (org-element-property :type link))
+              (path (org-element-property :path link)))
+          (when (and (string= type "file")
+                     (string-match-p "\\.\\(png\\|jpg\\|jpeg\\|gif\\|svg\\|webp\\)$" path))
+            (push path links))))
+      nil nil t)
+    ;; Check if there's substantial text content besides the link
+    (let ((text (gh/org-docs--extract-plain-text paragraph)))
+      (when (> (length (string-trim text)) 0)
+        (setq has-other-content t)))
+    ;; Return the image path if it's the only content
+    (when (and links (= (length links) 1) (not has-other-content))
+      (car links))))
+
+(defun gh/org-docs--image-to-sexp (image-path parent-id counter)
+  "Convert IMAGE-PATH to S-expression.
+PARENT-ID is the parent section ID.
+COUNTER is the image occurrence number."
+  (let* ((elem-id (gh/org-docs--make-element-id parent-id "image" counter))
+         ;; Resolve path relative to current buffer's directory
+         (abs-path (if (file-name-absolute-p image-path)
+                       image-path
+                     (expand-file-name image-path
+                                       (file-name-directory (or buffer-file-name default-directory))))))
+    (list 'image
+          :custom-id elem-id
+          :path abs-path
+          :alt-text (file-name-base image-path))))
+
 (defun gh/org-docs--buffer-to-content ()
   "Convert current buffer content to list of content S-expressions."
   (gh/org-docs--debug "Converting buffer to content S-expressions")
@@ -408,11 +443,21 @@ COUNTER is the table occurrence number."
                  (clrhash counters)
                  (push sexp content)))
               ('paragraph
-               (let* ((key (format "%s-para" current-section-id))
-                      (count (gethash key counters 0)))
-                 (puthash key (1+ count) counters)
-                 (push (gh/org-docs--paragraph-to-sexp element current-section-id count)
-                       content)))
+               ;; Check if this paragraph is just an image link
+               (let ((image-path (gh/org-docs--paragraph-image-link element)))
+                 (if image-path
+                     ;; It's an image
+                     (let* ((key (format "%s-image" current-section-id))
+                            (count (gethash key counters 0)))
+                       (puthash key (1+ count) counters)
+                       (push (gh/org-docs--image-to-sexp image-path current-section-id count)
+                             content))
+                   ;; Regular paragraph
+                   (let* ((key (format "%s-para" current-section-id))
+                          (count (gethash key counters 0)))
+                     (puthash key (1+ count) counters)
+                     (push (gh/org-docs--paragraph-to-sexp element current-section-id count)
+                           content)))))
               ('plain-list
                (let* ((key (format "%s-list" current-section-id))
                       (count (gethash key counters 0)))
