@@ -6,7 +6,7 @@
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "30.1") (org "9.7"))
 ;; Keywords: outlines, docs, collaboration
-;; URL: https://github.com/jfb/gh-org-sync
+;; URL: https://github.com/tftio/gh-org-sync
 ;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
