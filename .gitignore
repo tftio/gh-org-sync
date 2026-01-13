@@ -1,0 +1,6 @@
+# Go build/test artifacts
+/org2gdocs-api
+*.test
+*.out
+coverage.out
+
