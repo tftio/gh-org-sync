@@ -697,6 +697,41 @@ Returns the parsed response."
         (insert (format "[[id:comment-%s][Jump to comment location]]\n" comment-id))))))
 
 ;; ============================================================================
+;; Pre-push processing
+;; ============================================================================
+
+(defun gh/org-docs--execute-image-blocks ()
+  "Execute source blocks that generate images (mermaid, ditaa, plantuml, etc.)."
+  (gh/org-docs--debug "Executing image-generating source blocks")
+  (let ((executed 0))
+    (org-element-map (org-element-parse-buffer) 'src-block
+      (lambda (block)
+        (let ((lang (org-element-property :language block)))
+          (when (member lang '("mermaid" "ditaa" "plantuml" "dot" "graphviz"))
+            (save-excursion
+              (goto-char (org-element-property :begin block))
+              (condition-case err
+                  (progn
+                    (org-babel-execute-src-block)
+                    (setq executed (1+ executed)))
+                (error
+                 (gh/org-docs--debug "Failed to execute %s block: %s" lang err)))))))
+      nil nil t)
+    (when (> executed 0)
+      (gh/org-docs--debug "Executed %d image-generating block(s)" executed)
+      (message "Generated %d image(s) from source blocks" executed))))
+
+(defun gh/org-docs--check-missing-images (content)
+  "Check CONTENT for image items with missing files. Return list of missing paths."
+  (let ((missing nil))
+    (dolist (item content)
+      (when (eq (car item) 'image)
+        (let ((path (plist-get (cdr item) :path)))
+          (unless (file-exists-p path)
+            (push path missing)))))
+    (nreverse missing)))
+
+;; ============================================================================
 ;; Main commands
 ;; ============================================================================
 
@@ -708,28 +743,45 @@ Returns the parsed response."
   (unless (derived-mode-p 'org-mode)
     (user-error "This command only works in org-mode buffers"))
 
+  ;; Execute image-generating blocks first
+  (gh/org-docs--execute-image-blocks)
   (save-buffer)
 
   ;; Convert buffer to content
   (let* ((content (gh/org-docs--buffer-to-content))
+         (missing-images (gh/org-docs--check-missing-images content))
          (doc-id (gh/org-docs--get-doc-id))
          (title (gh/org-docs--get-title))
-         (comments-to-resolve (gh/org-docs--get-resolved-comment-ids))
-         (data (list :document-id (or doc-id 'nil)
-                     :title title
-                     :content content
-                     :comments-to-resolve (or comments-to-resolve 'nil))))
+         (comments-to-resolve (gh/org-docs--get-resolved-comment-ids)))
 
-    (message "Pushing to Google Docs...")
-    (let ((result (gh/org-docs--call-api 'push data)))
-      ;; Update metadata
-      (gh/org-docs--set-doc-id (plist-get result :document-id))
-      (gh/org-docs--set-doc-url (plist-get result :document-url))
-      (gh/org-docs--save-position-map (plist-get result :position-map))
-      (gh/org-docs--set-last-push (format-time-string "[%Y-%m-%d %a %H:%M]"))
+    ;; Warn about missing images
+    (when missing-images
+      (unless (y-or-n-p (format "%d image(s) not found: %s. Continue anyway? "
+                                (length missing-images)
+                                (mapconcat #'file-name-nondirectory missing-images ", ")))
+        (user-error "Push cancelled - generate missing images first"))
+      ;; Filter out missing images from content
+      (setq content (cl-remove-if
+                     (lambda (item)
+                       (and (eq (car item) 'image)
+                            (member (plist-get (cdr item) :path) missing-images)))
+                     content)))
 
-      (save-buffer)
-      (message "Pushed to Google Docs: %s" (plist-get result :document-url)))))
+    (let ((data (list :document-id (or doc-id 'nil)
+                       :title title
+                       :content content
+                       :comments-to-resolve (or comments-to-resolve 'nil))))
+
+      (message "Pushing to Google Docs...")
+      (let ((result (gh/org-docs--call-api 'push data)))
+        ;; Update metadata
+        (gh/org-docs--set-doc-id (plist-get result :document-id))
+        (gh/org-docs--set-doc-url (plist-get result :document-url))
+        (gh/org-docs--save-position-map (plist-get result :position-map))
+        (gh/org-docs--set-last-push (format-time-string "[%Y-%m-%d %a %H:%M]"))
+
+        (save-buffer)
+        (message "Pushed to Google Docs: %s" (plist-get result :document-url))))))
 
 (defun gh/org-docs-pull ()
   "Pull comments from Google Docs."
