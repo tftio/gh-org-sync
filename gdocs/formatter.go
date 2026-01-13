@@ -23,9 +23,9 @@ func BuildTextStyleRequests(text string, baseIndex int64, ranges []FormatRange) 
 		start := baseIndex + runeOffsets[r.Start]
 		end := baseIndex + runeOffsets[r.End]
 
-		// Google Docs can't attach link styles to newline characters. We avoid
-		// formatting the trailing newline by clamping to the inserted text.
-		if end < start {
+		// Skip empty ranges - Google Docs API rejects them.
+		// Also skip when end < start (shouldn't happen but guard anyway).
+		if end <= start {
 			continue
 		}
 
