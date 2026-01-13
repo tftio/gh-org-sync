@@ -1,0 +1,28 @@
+#+TITLE: Test Document for gh-org-docs
+
+* Introduction
+
+This is a test document to verify the org-mode to Google Docs sync system.
+
+* Features
+
+** Text Formatting
+
+This paragraph has *bold text*, /italic text/, _underlined text_, and +strikethrough+.
+
+** Lists
+
+- First item
+- Second item
+- Third item
+
+** Tables
+
+| Name  | Value |
+|-------+-------|
+| Alpha | 100   |
+| Beta  | 200   |
+
+* Conclusion
+
+The sync system should handle all of these elements correctly.

@@ -1,0 +1,219 @@
+#+TITLE: gh-org-docs - Org-mode to Google Docs Sync
+#+AUTHOR: James Felix Black
+#+OPTIONS: toc:2 num:nil
+
+* Overview
+
+=gh-org-docs= is a bidirectional collaboration system between org-mode and Google Docs. It enables authoring in org-mode while using Google Docs as a collaboration surface for comments and feedback.
+
+*Key Principle*: Google Docs is the collaboration surface, not the document storage. Org-mode is the single source of truth.
+
+* Components
+
+- *Emacs package* (=gh-org-docs.el=): Parsing, buffer manipulation, workflow orchestration
+- *Go tool* (=org2gdocs-api=): Stateless API client for Google Docs
+- *Communication*: S-expressions via stdin/stdout
+
+* Installation
+
+** Prerequisites
+
+- Emacs 30.1+
+- Go 1.23+
+- Google Cloud project with Docs and Drive APIs enabled
+
+** Google Cloud Setup
+
+1. Create a project at https://console.cloud.google.com/
+2. Enable the Google Docs API and Google Drive API
+3. Create OAuth 2.0 credentials (Desktop application type)
+4. Download the credentials JSON file
+
+** Install the Go Tool
+
+#+begin_src shell
+cd /path/to/gh-org-sync
+go build -o ~/.local/bin/org2gdocs-api ./cmd/org2gdocs-api
+#+end_src
+
+** Configure Credentials
+
+#+begin_src shell
+mkdir -p ~/.config/org2gdocs
+cp /path/to/downloaded/credentials.json ~/.config/org2gdocs/credentials.json
+#+end_src
+
+** Authenticate
+
+#+begin_src shell
+org2gdocs-api auth
+#+end_src
+
+This opens a browser for OAuth authorization. After granting access, the token is stored at =~/.local/share/org2gdocs/token.json=.
+
+** Load the Emacs Package
+
+Add to your Emacs config:
+
+#+begin_src elisp
+(load "/path/to/gh-org-sync/gh-org-docs.el")
+#+end_src
+
+* Usage
+
+** Enable the Minor Mode
+
+In any org-mode buffer:
+
+#+begin_src elisp
+M-x gh/org-docs-mode
+#+end_src
+
+Or add to your config for automatic activation:
+
+#+begin_src elisp
+(add-hook 'org-mode-hook #'gh/org-docs-mode)
+#+end_src
+
+** Keybindings
+
+| Key       | Command                     | Description                          |
+|-----------+-----------------------------+--------------------------------------|
+| =C-c g s= | =gh/org-docs-dwim=          | Do What I Mean (smart sync)          |
+| =C-c g p= | =gh/org-docs-push=          | Push buffer to Google Docs           |
+| =C-c g f= | =gh/org-docs-pull=          | Pull comments from Google Docs       |
+| =C-c g c= | =gh/org-docs-clean=         | Archive resolved comments            |
+| =C-c g o= | =gh/org-docs-open-in-browser= | Open linked doc in browser         |
+| =C-c g d= | =gh/org-docs-toggle-debug=  | Toggle debug mode                    |
+
+** Workflow
+
+*** Creating a New Document
+
+1. Open an org file
+2. Enable =gh/org-docs-mode=
+3. Press =C-c g p= (push)
+4. A new Google Doc is created and linked via =#+GDOC_ID:=
+
+*** Collaborating
+
+1. Share the Google Doc URL with collaborators
+2. They add comments in Google Docs
+3. Press =C-c g f= (pull) to fetch comments
+4. Comments appear as TODO items in =GDOC_METADATA= section
+
+*** Resolving Comments
+
+1. Change comment TODO state to DONE
+2. Press =C-c g s= (DWIM) or =C-c g p= (push)
+3. Comments are resolved in Google Docs
+4. Press =C-c g c= (clean) to archive resolved entries
+
+** File Structure After Sync
+
+#+begin_src org
+,#+TITLE: My Document
+,#+GDOC_ID: 1abc...xyz
+,#+GDOC_LAST_PUSH: [2026-01-13 Mon 14:30]
+,#+GDOC_LAST_PULL: [2026-01-13 Mon 16:45]
+
+,* Introduction
+:PROPERTIES:
+:CUSTOM_ID: sec-introduction
+:END:
+
+Content here.[[id:comment-abc123][*]]
+
+,* GDOC_METADATA :noexport:
+
+,** Active Comments
+
+,*** TODO Review this section - Jane Smith
+:PROPERTIES:
+:COMMENT_ID: abc123
+:COMMENT_AUTHOR: Jane Smith
+:COMMENT_EMAIL: jane@example.com
+:COMMENT_DATE: 2026-01-13T10:23:00Z
+:COMMENT_SECTION: sec-introduction
+:END:
+
+,#+begin_quote
+This needs more detail
+,#+end_quote
+
+[[id:comment-abc123][Jump to comment location]]
+
+,** Position Map
+,#+begin_src emacs-lisp :exports none :results silent
+'(("sec-introduction" . (:gdoc-index 1 :type heading)))
+,#+end_src
+
+,** Collaborator Cache
+| Email            | Display Name |
+|------------------+--------------|
+| jane@example.com | Jane Smith   |
+#+end_src
+
+* Supported Content
+
+| Org Element     | Google Docs Equivalent |
+|-----------------+------------------------|
+| Headlines       | Headings (H1-H6)       |
+| Paragraphs      | Normal text            |
+| Bold            | Bold                   |
+| Italic          | Italic                 |
+| Underline       | Underline              |
+| Strikethrough   | Strikethrough          |
+| Code            | Monospace              |
+| Unordered lists | Bullet lists           |
+| Ordered lists   | Numbered lists         |
+| Tables          | Tables                 |
+| Images          | Inline images          |
+
+* Configuration
+
+** Emacs Variables
+
+| Variable                       | Default                                    | Description              |
+|--------------------------------+--------------------------------------------+--------------------------|
+| =gh/org-docs-api-command=      | ="org2gdocs-api"=                          | Path to Go tool          |
+| =gh/org-docs-credentials-path= | =~/.config/org2gdocs/credentials.json=     | OAuth credentials        |
+| =gh/org-docs-token-path=       | =~/.local/share/org2gdocs/token.json=      | OAuth token              |
+| =gh/org-docs-debug-mode=       | =nil=                                      | Enable debug logging     |
+
+** Go Tool Configuration
+
+Configuration file: =~/.config/org2gdocs/config.toml=
+
+#+begin_src toml
+credentials_path = "~/.config/org2gdocs/credentials.json"
+token_path = "~/.local/share/org2gdocs/token.json"
+debug = false
+#+end_src
+
+* Debugging
+
+Enable debug mode with =C-c g d= or:
+
+#+begin_src elisp
+(setq gh/org-docs-debug-mode t)
+#+end_src
+
+Debug output appears in the =*gh-org-docs-debug*= buffer.
+
+For Go tool debugging:
+
+#+begin_src shell
+org2gdocs-api --debug
+#+end_src
+
+* Limitations
+
+- Google Docs is for comments only; content edits in Docs are not synced back
+- Each push replaces the entire document (no incremental updates)
+- Images must be local files (no remote URLs)
+- SVG images are converted to PNG before upload
+
+* License
+
+MIT
