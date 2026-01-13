@@ -435,20 +435,29 @@ COUNTER is the image occurrence number."
           :path abs-path
           :alt-text (file-name-base image-path))))
 
+(defun gh/org-docs--src-block-generates-image-p (src-block)
+  "Return non-nil if SRC-BLOCK generates an image file.
+Checks for :file parameter in header args."
+  (let ((params (org-element-property :parameters src-block)))
+    (and params (string-match-p ":file" params))))
+
 (defun gh/org-docs--src-block-to-sexp (src-block parent-id counter)
   "Convert SRC-BLOCK element to S-expression (as monospace paragraph).
 PARENT-ID is the parent section ID.
-COUNTER is the code block occurrence number."
-  (let* ((elem-id (gh/org-docs--make-element-id parent-id "code" counter))
-         (lang (org-element-property :language src-block))
-         (value (org-element-property :value src-block))
-         ;; Clean up the value (remove trailing newline if present)
-         (text (string-trim-right value)))
-    ;; Format the entire block as code (monospace)
-    (list 'paragraph
-          :text text
-          :custom-id elem-id
-          :formatting (list (list 'code :start 0 :end (length text))))))
+COUNTER is the code block occurrence number.
+Returns nil for image-generating blocks (their output is captured separately)."
+  ;; Skip blocks that generate images - the image will be captured from #+RESULTS:
+  (unless (gh/org-docs--src-block-generates-image-p src-block)
+    (let* ((elem-id (gh/org-docs--make-element-id parent-id "code" counter))
+           (lang (org-element-property :language src-block))
+           (value (org-element-property :value src-block))
+           ;; Clean up the value (remove trailing newline if present)
+           (text (string-trim-right value)))
+      ;; Format the entire block as code (monospace)
+      (list 'paragraph
+            :text text
+            :custom-id elem-id
+            :formatting (list (list 'code :start 0 :end (length text)))))))
 
 (defun gh/org-docs--buffer-to-content ()
   "Convert current buffer content to list of content S-expressions."
@@ -498,11 +507,14 @@ COUNTER is the code block occurrence number."
                  (push (gh/org-docs--table-to-sexp element current-section-id count)
                        content)))
               ('src-block
-               (let* ((key (format "%s-code" current-section-id))
-                      (count (gethash key counters 0)))
-                 (puthash key (1+ count) counters)
-                 (push (gh/org-docs--src-block-to-sexp element current-section-id count)
-                       content)))))))
+               ;; Only include non-image-generating source blocks
+               (let ((sexp (gh/org-docs--src-block-to-sexp element current-section-id
+                            (gethash (format "%s-code" current-section-id) counters 0))))
+                 (when sexp
+                   (let* ((key (format "%s-code" current-section-id))
+                          (count (gethash key counters 0)))
+                     (puthash key (1+ count) counters)
+                     (push sexp content)))))))))
       nil nil 'first-match)
     (nreverse content)))
 
