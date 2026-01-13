@@ -3,6 +3,7 @@ package gdocs
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"google.golang.org/api/docs/v1"
@@ -368,6 +369,14 @@ func insertAndFillTable(ctx context.Context, c *Client, docID string, index int6
 	}
 
 	if len(cellReqs) > 0 {
+		// Sort requests in reverse order by index (highest first).
+		// When batched, insertions at higher indices must come first
+		// so they don't shift when earlier text is inserted.
+		sort.Slice(cellReqs, func(i, j int) bool {
+			return cellReqs[i].InsertText.Location.Index > cellReqs[j].InsertText.Location.Index
+		})
+		debug.Log("Sorted %d cell requests by index (descending)", len(cellReqs))
+
 		if _, err := c.Docs.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{Requests: cellReqs}).Context(ctx).Do(); err != nil {
 			return 0, err
 		}
