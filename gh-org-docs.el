@@ -104,6 +104,8 @@ exists for compatibility with the original plan."
             (define-key map (kbd "C-c g c") #'gh/org-docs-clean)
             (define-key map (kbd "C-c g o") #'gh/org-docs-open-in-browser)
             (define-key map (kbd "C-c g d") #'gh/org-docs-toggle-debug)
+            (define-key map (kbd "C-c g n") #'gh/org-docs-next-comment)
+            (define-key map (kbd "C-c g N") #'gh/org-docs-prev-comment)
             map))
 
 ;; ============================================================================
@@ -1000,6 +1002,37 @@ Returns the parsed response."
      (url (browse-url url))
      (doc-id (browse-url (format "https://docs.google.com/document/d/%s/edit" doc-id)))
      (t (user-error "No Google Doc linked to this file")))))
+
+(defun gh/org-docs-next-comment (&optional prev)
+  "Jump to the next comment TODO entry.
+With PREV non-nil, jump to the previous comment."
+  (interactive)
+  (let ((search-fn (if prev #'re-search-backward #'re-search-forward))
+        (start (point))
+        found)
+    ;; Move past current heading if on one
+    (when (and (not prev) (org-at-heading-p))
+      (end-of-line))
+    (when (and prev (org-at-heading-p))
+      (beginning-of-line))
+    ;; Search for next/prev comment entry
+    (save-excursion
+      (while (and (not found)
+                  (funcall search-fn "^:COMMENT_ID:" nil t))
+        (setq found (point))))
+    (if found
+        (progn
+          (goto-char found)
+          (org-back-to-heading t)
+          (org-show-entry)
+          (message "%s" (org-get-heading t t t t)))
+      (goto-char start)
+      (message "No %s comment" (if prev "previous" "more")))))
+
+(defun gh/org-docs-prev-comment ()
+  "Jump to the previous comment TODO entry."
+  (interactive)
+  (gh/org-docs-next-comment t))
 
 ;; ============================================================================
 ;; Auto-enable hook
