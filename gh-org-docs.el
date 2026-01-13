@@ -303,17 +303,17 @@ BASE-TEXT is the plain text for calculating offsets."
           (when start
             (let ((end (+ start (length content))))
               (setq pos end)
-              (push (list (pcase type
-                            ('bold 'bold)
-                            ('italic 'italic)
-                            ('underline 'underline)
-                            ('strike-through 'strikethrough)
-                            ('code 'code)
-                            ('link 'link))
-                          :start start
-                          :end end
-                          ,@(when (eq type 'link)
-                              (list :url (org-element-property :raw-link obj))))
+              (push `(,(pcase type
+                         ('bold 'bold)
+                         ('italic 'italic)
+                         ('underline 'underline)
+                         ('strike-through 'strikethrough)
+                         ('code 'code)
+                         ('link 'link))
+                      :start ,start
+                      :end ,end
+                      ,@(when (eq type 'link)
+                          (list :url (org-element-property :raw-link obj))))
                     ranges)))))
       nil nil t)
     (nreverse ranges)))
