@@ -763,10 +763,12 @@ Returns the parsed response."
       (insert "|-------+--------------|\n"))))
 
 (defun gh/org-docs--insert-comment-marker (comment)
-  "Insert comment marker for COMMENT at appropriate location."
-  (let* ((anchor (plist-get comment :anchor))
+  "Insert comment marker for COMMENT at appropriate location.
+COMMENT is (comment :id ... :anchor ...) - skip the symbol to get plist."
+  (let* ((props (cdr comment))  ; skip 'comment symbol
+         (anchor (plist-get props :anchor))
          (custom-id (plist-get anchor :custom-id))
-         (comment-id (plist-get comment :id)))
+         (comment-id (plist-get props :id)))
     (when custom-id
       (save-excursion
         (goto-char (point-min))
@@ -780,13 +782,15 @@ Returns the parsed response."
           (insert (format "[[id:comment-%s][*]]" comment-id)))))))
 
 (defun gh/org-docs--create-comment-todo (comment)
-  "Create TODO entry for COMMENT in Active Comments section."
-  (let ((comment-id (plist-get comment :id))
-        (author-name (plist-get comment :author-name))
-        (author-email (plist-get comment :author-email))
-        (text (plist-get comment :text))
-        (created (plist-get comment :created))
-        (anchor (plist-get comment :anchor)))
+  "Create TODO entry for COMMENT in Active Comments section.
+COMMENT is (comment :id ... :text ...) - skip the symbol to get plist."
+  (let* ((props (cdr comment))  ; skip 'comment symbol
+         (comment-id (plist-get props :id))
+         (author-name (plist-get props :author-name))
+         (author-email (plist-get props :author-email))
+         (text (plist-get props :text))
+         (created (plist-get props :created))
+         (anchor (plist-get props :anchor)))
     (save-excursion
       (goto-char (point-min))
       (when (re-search-forward "^\\*\\* Active Comments" nil t)
