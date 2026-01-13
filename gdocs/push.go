@@ -270,15 +270,29 @@ func insertAndFillTable(ctx context.Context, c *Client, docID string, index int6
 		return index, nil
 	}
 
+	// Step 0: Fetch the document to get the actual current end index.
+	// This handles index drift from UTF-16 calculations or structural elements.
+	doc, err := c.Docs.Documents.Get(docID).Context(ctx).Do()
+	if err != nil {
+		return 0, err
+	}
+	actualEndIndex := documentEndIndex(doc) - 1
+	if actualEndIndex < 1 {
+		actualEndIndex = 1
+	}
+
+	// Use the actual end index for table insertion
+	insertIndex := actualEndIndex
+
 	// Step 1: Insert the table skeleton.
-	_, err := c.Docs.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+	_, err = c.Docs.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
 		Requests: []*docs.Request{
 			{
 				InsertTable: &docs.InsertTableRequest{
 					Rows:    int64(len(rows)),
 					Columns: int64(cols),
 					Location: &docs.Location{
-						Index: index,
+						Index: insertIndex,
 					},
 				},
 			},
@@ -290,14 +304,14 @@ func insertAndFillTable(ctx context.Context, c *Client, docID string, index int6
 
 	// Step 2: Fetch the doc to find the new table and compute cell insertion
 	// indices.
-	doc, err := c.Docs.Documents.Get(docID).Context(ctx).Do()
+	doc, err = c.Docs.Documents.Get(docID).Context(ctx).Do()
 	if err != nil {
 		return 0, err
 	}
 
-	tableEl := findTableElement(doc, index)
+	tableEl := findTableElement(doc, insertIndex)
 	if tableEl == nil || tableEl.Table == nil {
-		return 0, fmt.Errorf("inserted table not found at index %d", index)
+		return 0, fmt.Errorf("inserted table not found at index %d (expected %d)", insertIndex, index)
 	}
 
 	// Step 3: Insert cell contents.
@@ -352,15 +366,45 @@ func findTableElement(doc *docs.Document, startIndex int64) *docs.StructuralElem
 	if doc.Body == nil {
 		return nil
 	}
+
+	// First try exact match
+	for _, el := range doc.Body.Content {
+		if el.Table != nil && el.StartIndex == startIndex {
+			return el
+		}
+	}
+
+	// If no exact match, find the table nearest to (but not before) startIndex.
+	// This handles index drift from newlines and structural elements.
+	var best *docs.StructuralElement
+	var bestDist int64 = -1
 	for _, el := range doc.Body.Content {
 		if el.Table == nil {
 			continue
 		}
-		if el.StartIndex == startIndex {
-			return el
+		dist := el.StartIndex - startIndex
+		if dist >= 0 && (bestDist < 0 || dist < bestDist) {
+			best = el
+			bestDist = dist
 		}
 	}
-	return nil
+
+	// Also consider tables slightly before startIndex (within 5 indices)
+	// to handle cases where preceding content was shorter than expected
+	if best == nil {
+		for _, el := range doc.Body.Content {
+			if el.Table == nil {
+				continue
+			}
+			dist := startIndex - el.StartIndex
+			if dist >= 0 && dist <= 5 && (bestDist < 0 || dist < bestDist) {
+				best = el
+				bestDist = dist
+			}
+		}
+	}
+
+	return best
 }
 
 func cellStartIndex(cell *docs.TableCell) int64 {
