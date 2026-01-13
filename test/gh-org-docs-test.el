@@ -112,5 +112,170 @@
     (insert "* Heading\n")
     (should (stringp (gh/org-docs--get-title)))))
 
+;; ============================================================================
+;; Content extraction tests
+;; ============================================================================
+
+(ert-deftest gh-org-docs-extract-plain-text ()
+  "Test plain text extraction from org elements."
+  (with-temp-buffer
+    (org-mode)
+    (insert "Simple paragraph text.\n")
+    (let* ((tree (org-element-parse-buffer))
+           (para (org-element-map tree 'paragraph #'identity nil t)))
+      (should (string= (gh/org-docs--extract-plain-text para)
+                       "Simple paragraph text."))))
+  ;; Text with formatting (spaces around formatting may be collapsed)
+  (with-temp-buffer
+    (org-mode)
+    (insert "Text with *bold* and /italic/ words.\n")
+    (let* ((tree (org-element-parse-buffer))
+           (para (org-element-map tree 'paragraph #'identity nil t))
+           (text (gh/org-docs--extract-plain-text para)))
+      ;; Should contain the words without formatting markers
+      (should (string-match-p "bold" text))
+      (should (string-match-p "italic" text)))))
+
+(ert-deftest gh-org-docs-table-parsing ()
+  "Test table parsing extracts cells correctly without text properties."
+  (with-temp-buffer
+    (org-mode)
+    (insert "| A | B | C |\n|---+---+---|\n| 1 | 2 | 3 |\n| x | y | z |\n")
+    (let* ((tree (org-element-parse-buffer))
+           (table (org-element-map tree 'table #'identity nil t))
+           (result (gh/org-docs--table-to-sexp table "test" 0))
+           (rows (plist-get (cdr result) :rows)))
+      ;; Should have 3 rows (header + 2 data rows, separator is skipped)
+      (should (= (length rows) 3))
+      ;; First row (header)
+      (should (equal (car rows) '("A" "B" "C")))
+      ;; Second row
+      (should (equal (cadr rows) '("1" "2" "3")))
+      ;; Third row
+      (should (equal (caddr rows) '("x" "y" "z")))
+      ;; Verify strings have no text properties
+      (should (not (text-properties-at 0 (caar rows)))))))
+
+(ert-deftest gh-org-docs-image-link-detection ()
+  "Test detection of image-only paragraphs."
+  ;; Paragraph with only an image link
+  (with-temp-buffer
+    (org-mode)
+    (insert "[[file:test.png]]\n")
+    (setq buffer-file-name "/tmp/test.org")
+    (let* ((tree (org-element-parse-buffer))
+           (para (org-element-map tree 'paragraph #'identity nil t)))
+      (should (string= (gh/org-docs--paragraph-image-link para) "test.png"))))
+  ;; Paragraph with text and image - should NOT be detected as image-only
+  (with-temp-buffer
+    (org-mode)
+    (insert "Some text [[file:test.png]] more text\n")
+    (setq buffer-file-name "/tmp/test.org")
+    (let* ((tree (org-element-parse-buffer))
+           (para (org-element-map tree 'paragraph #'identity nil t)))
+      (should (null (gh/org-docs--paragraph-image-link para)))))
+  ;; Non-image link
+  (with-temp-buffer
+    (org-mode)
+    (insert "[[file:document.pdf]]\n")
+    (setq buffer-file-name "/tmp/test.org")
+    (let* ((tree (org-element-parse-buffer))
+           (para (org-element-map tree 'paragraph #'identity nil t)))
+      (should (null (gh/org-docs--paragraph-image-link para))))))
+
+(ert-deftest gh-org-docs-src-block-parsing ()
+  "Test source block parsing."
+  ;; Regular source block (no :file)
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src python\nprint('hello')\n#+end_src\n")
+    (let* ((tree (org-element-parse-buffer))
+           (block (org-element-map tree 'src-block #'identity nil t))
+           (result (gh/org-docs--src-block-to-sexp block "test" 0)))
+      (should result)
+      (should (eq (car result) 'paragraph))
+      (should (string= (plist-get (cdr result) :text) "print('hello')"))))
+  ;; Image-generating source block (with :file) should return nil
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src mermaid :file diagram.png\ngraph TD\n#+end_src\n")
+    (let* ((tree (org-element-parse-buffer))
+           (block (org-element-map tree 'src-block #'identity nil t))
+           (result (gh/org-docs--src-block-to-sexp block "test" 0)))
+      (should (null result)))))
+
+(ert-deftest gh-org-docs-src-block-image-detection ()
+  "Test detection of image-generating source blocks."
+  ;; With :file parameter
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src mermaid :file output.png\ncode\n#+end_src\n")
+    (let* ((tree (org-element-parse-buffer))
+           (block (org-element-map tree 'src-block #'identity nil t)))
+      (should (gh/org-docs--src-block-generates-image-p block))))
+  ;; Without :file parameter
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src python\ncode\n#+end_src\n")
+    (let* ((tree (org-element-parse-buffer))
+           (block (org-element-map tree 'src-block #'identity nil t)))
+      (should (not (gh/org-docs--src-block-generates-image-p block))))))
+
+(ert-deftest gh-org-docs-paragraph-to-sexp ()
+  "Test paragraph to S-expression conversion."
+  (with-temp-buffer
+    (org-mode)
+    (insert "A simple paragraph.\n")
+    (let* ((tree (org-element-parse-buffer))
+           (para (org-element-map tree 'paragraph #'identity nil t))
+           (result (gh/org-docs--paragraph-to-sexp para "sec-test" 0)))
+      (should (eq (car result) 'paragraph))
+      (should (string= (plist-get (cdr result) :text) "A simple paragraph."))
+      (should (string= (plist-get (cdr result) :custom-id) "sec-test/para-0")))))
+
+(ert-deftest gh-org-docs-list-to-sexp ()
+  "Test list to S-expression conversion."
+  ;; Unordered list
+  (with-temp-buffer
+    (org-mode)
+    (insert "- Item one\n- Item two\n- Item three\n")
+    (let* ((tree (org-element-parse-buffer))
+           (lst (org-element-map tree 'plain-list #'identity nil t))
+           (result (gh/org-docs--list-to-sexp lst "sec-test" 0)))
+      (should (eq (car result) 'list))
+      (should (string= (plist-get (cdr result) :type) "unordered"))
+      (should (= (length (plist-get (cdr result) :items)) 3))))
+  ;; Ordered list
+  (with-temp-buffer
+    (org-mode)
+    (insert "1. First\n2. Second\n")
+    (let* ((tree (org-element-parse-buffer))
+           (lst (org-element-map tree 'plain-list #'identity nil t))
+           (result (gh/org-docs--list-to-sexp lst "sec-test" 0)))
+      (should (string= (plist-get (cdr result) :type) "ordered")))))
+
+(ert-deftest gh-org-docs-heading-to-sexp ()
+  "Test heading to S-expression conversion."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Top Level Heading\n:PROPERTIES:\n:CUSTOM_ID: sec-top\n:END:\nContent\n")
+    (let* ((tree (org-element-parse-buffer))
+           (headline (org-element-map tree 'headline #'identity nil t))
+           (result (gh/org-docs--heading-to-sexp headline)))
+      (should (eq (car result) 'heading))
+      (should (= (plist-get (cdr result) :level) 1))
+      (should (string= (plist-get (cdr result) :text) "Top Level Heading"))
+      (should (string= (plist-get (cdr result) :custom-id) "sec-top")))))
+
+(ert-deftest gh-org-docs-image-to-sexp ()
+  "Test image S-expression generation."
+  (with-temp-buffer
+    (setq buffer-file-name "/path/to/document.org")
+    (let ((result (gh/org-docs--image-to-sexp "images/diagram.png" "sec-test" 0)))
+      (should (eq (car result) 'image))
+      (should (string= (plist-get (cdr result) :custom-id) "sec-test/image-0"))
+      (should (string= (plist-get (cdr result) :path) "/path/to/images/diagram.png"))
+      (should (string= (plist-get (cdr result) :alt-text) "diagram")))))
+
 (provide 'gh-org-docs-test)
 ;;; gh-org-docs-test.el ends here
