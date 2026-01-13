@@ -189,6 +189,15 @@ else at the start of the buffer."
   (gh/org-docs--debug "Setting GDOC_ID to: %s" doc-id)
   (gh/org-docs--set-file-property "GDOC_ID" doc-id))
 
+(defun gh/org-docs--get-doc-url ()
+  "Get GDOC_URL from file properties."
+  (gh/org-docs--get-file-property "GDOC_URL"))
+
+(defun gh/org-docs--set-doc-url (url)
+  "Set GDOC_URL in file properties."
+  (gh/org-docs--debug "Setting GDOC_URL to: %s" url)
+  (gh/org-docs--set-file-property "GDOC_URL" url))
+
 (defun gh/org-docs--get-last-push ()
   "Get last push timestamp."
   (gh/org-docs--get-file-property "GDOC_LAST_PUSH"))
@@ -670,6 +679,7 @@ Returns the parsed response."
     (let ((result (gh/org-docs--call-api 'push data)))
       ;; Update metadata
       (gh/org-docs--set-doc-id (plist-get result :document-id))
+      (gh/org-docs--set-doc-url (plist-get result :document-url))
       (gh/org-docs--save-position-map (plist-get result :position-map))
       (gh/org-docs--set-last-push (format-time-string "[%Y-%m-%d %a %H:%M]"))
 
@@ -787,10 +797,12 @@ Returns the parsed response."
 (defun gh/org-docs-open-in-browser ()
   "Open the linked Google Doc in a web browser."
   (interactive)
-  (let ((doc-id (gh/org-docs--get-doc-id)))
-    (if doc-id
-        (browse-url (format "https://docs.google.com/document/d/%s/edit" doc-id))
-      (user-error "No Google Doc linked to this file"))))
+  (let ((url (gh/org-docs--get-doc-url))
+        (doc-id (gh/org-docs--get-doc-id)))
+    (cond
+     (url (browse-url url))
+     (doc-id (browse-url (format "https://docs.google.com/document/d/%s/edit" doc-id)))
+     (t (user-error "No Google Doc linked to this file")))))
 
 (provide 'gh-org-docs)
 ;;; gh-org-docs.el ends here
