@@ -45,8 +45,8 @@ func handleOperation(cfg *config.Config) {
 		exit := handlePush(context.Background(), cfg, data)
 		os.Exit(exit)
 	case "pull":
-		_ = writeErrorResult(os.Stdout, errCodeNotImplemented, "pull not implemented", nil)
-		os.Exit(1)
+		exit := handlePull(context.Background(), cfg, data)
+		os.Exit(exit)
 	default:
 		_ = writeErrorResult(os.Stdout, errCodeInvalidRequest, fmt.Sprintf("unknown operation: %s", op), nil)
 		os.Exit(1)
