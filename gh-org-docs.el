@@ -260,23 +260,35 @@ COUNTER is the occurrence number."
   (replace-regexp-in-string gh/org-docs--comment-marker-re "" text))
 
 (defun gh/org-docs--extract-plain-text (element)
-  "Extract plain text from ELEMENT, handling nested objects."
-  (let ((text ""))
-    (org-element-map element '(plain-text bold italic underline
-                               strike-through code verbatim link)
-      (lambda (obj)
-        (pcase (org-element-type obj)
-          ('plain-text
-           (setq text (concat text obj)))
-          ((or 'bold 'italic 'underline 'strike-through 'code 'verbatim)
-           (setq text (concat text (gh/org-docs--extract-plain-text obj))))
-          ('link
-           (let ((desc (org-element-contents obj)))
-             (if desc
-                 (setq text (concat text (gh/org-docs--extract-plain-text obj)))
-               (setq text (concat text (org-element-property :raw-link obj))))))))
-      nil nil t)
-    (gh/org-docs--strip-comment-markers (string-trim text))))
+  "Extract plain text from ELEMENT, handling nested objects.
+Uses iterative approach to avoid deep recursion."
+  (let ((result ""))
+    (gh/org-docs--extract-text-iter element
+                                    (lambda (s) (setq result (concat result s))))
+    (gh/org-docs--strip-comment-markers (string-trim result))))
+
+(defun gh/org-docs--extract-text-iter (element callback)
+  "Extract text from ELEMENT, calling CALLBACK for each text fragment.
+Iterates without nesting org-element-map calls."
+  (let ((contents (org-element-contents element)))
+    (dolist (child contents)
+      (cond
+       ;; Plain text string
+       ((stringp child)
+        (funcall callback child))
+       ;; Formatting elements - descend into contents
+       ((memq (org-element-type child)
+              '(bold italic underline strike-through code verbatim))
+        (gh/org-docs--extract-text-iter child callback))
+       ;; Links - use description or raw-link
+       ((eq (org-element-type child) 'link)
+        (let ((desc (org-element-contents child)))
+          (if desc
+              (gh/org-docs--extract-text-iter child callback)
+            (funcall callback (org-element-property :raw-link child)))))
+       ;; Nested elements (paragraphs, items, etc.) - descend
+       ((and (listp child) (org-element-type child))
+        (gh/org-docs--extract-text-iter child callback))))))
 
 (defun gh/org-docs--extract-formatting (element base-text)
   "Extract formatting ranges from ELEMENT.
