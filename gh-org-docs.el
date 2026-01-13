@@ -54,6 +54,16 @@ exists for compatibility with the original plan."
   :type 'boolean
   :group 'gh-org-docs)
 
+(defcustom gh/org-docs-auto-enable 'linked
+  "When to auto-enable `gh/org-docs-mode' in org buffers.
+- `linked': Only for files with GDOC_ID (already linked to Google Doc)
+- `always': For all org-mode files
+- `nil': Never auto-enable (manual activation only)"
+  :type '(choice (const :tag "Only linked files" linked)
+                 (const :tag "All org files" always)
+                 (const :tag "Never" nil))
+  :group 'gh-org-docs)
+
 (defvar gh/org-docs--debug-buffer "*gh-org-docs-debug*"
   "Buffer name for debug output.")
 
@@ -961,6 +971,30 @@ Returns the parsed response."
      (url (browse-url url))
      (doc-id (browse-url (format "https://docs.google.com/document/d/%s/edit" doc-id)))
      (t (user-error "No Google Doc linked to this file")))))
+
+;; ============================================================================
+;; Auto-enable hook
+;; ============================================================================
+
+(defun gh/org-docs--maybe-enable ()
+  "Maybe enable `gh/org-docs-mode' based on `gh/org-docs-auto-enable' setting."
+  (when (and (derived-mode-p 'org-mode)
+             (buffer-file-name))
+    (pcase gh/org-docs-auto-enable
+      ('always (gh/org-docs-mode 1))
+      ('linked (when (gh/org-docs--get-doc-id)
+                 (gh/org-docs-mode 1))))))
+
+;;;###autoload
+(defun gh/org-docs-setup-auto-enable ()
+  "Add `gh/org-docs-mode' auto-enable to `org-mode-hook'.
+Call this in your init file to enable automatic activation."
+  (add-hook 'org-mode-hook #'gh/org-docs--maybe-enable))
+
+;; Auto-setup when package is loaded (can be disabled by setting
+;; gh/org-docs-auto-enable to nil before loading)
+(with-eval-after-load 'org
+  (add-hook 'org-mode-hook #'gh/org-docs--maybe-enable))
 
 (provide 'gh-org-docs)
 ;;; gh-org-docs.el ends here
