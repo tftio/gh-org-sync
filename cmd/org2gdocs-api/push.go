@@ -40,6 +40,16 @@ func handlePush(ctx context.Context, cfg *config.Config, data sexp.Sexp) int {
 		return 1
 	}
 
+	// Resolve comments if any were requested
+	var resolvedComments []string
+	if len(req.CommentsToResolve) > 0 {
+		resolvedComments, err = gdocs.ResolveComments(ctx, client, result.DocumentID, req.CommentsToResolve)
+		if err != nil {
+			// Log but don't fail the push - document was already updated
+			_ = err
+		}
+	}
+
 	plist := sexp.List{
 		sexp.Symbol(":document-id"),
 		sexp.String(result.DocumentID),
@@ -48,7 +58,7 @@ func handlePush(ctx context.Context, cfg *config.Config, data sexp.Sexp) int {
 		sexp.Symbol(":position-map"),
 		encodePositionMap(result.PositionMap),
 		sexp.Symbol(":resolved-comments"),
-		sexp.List{},
+		encodeResolvedComments(resolvedComments),
 	}
 
 	if err := writeSuccessResult(os.Stdout, plist); err != nil {
@@ -352,6 +362,17 @@ func encodePositionMap(posMap map[string]gdocs.Position) sexp.Sexp {
 				sexp.Symbol(pos.Type),
 			},
 		})
+	}
+	return out
+}
+
+func encodeResolvedComments(ids []string) sexp.Sexp {
+	if len(ids) == 0 {
+		return sexp.List{}
+	}
+	out := make(sexp.List, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, sexp.String(id))
 	}
 	return out
 }
