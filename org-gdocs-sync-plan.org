@@ -1,0 +1,1677 @@
+#+TITLE: Org-Mode to Google Docs Sync System - Implementation Plan
+#+AUTHOR: Technical Specification
+#+DATE: 2026-01-13
+
+* Overview
+
+This document specifies a bidirectional collaboration system between org-mode and Google Docs. The system enables authoring in org-mode while using Google Docs as a collaboration surface for comments and feedback.
+
+** Key Principle
+Google Docs is the *collaboration surface*, not the document storage. Org-mode is the single source of truth.
+
+** Architecture
+- *Emacs* (gh/org-docs.el): Parsing, buffer manipulation, workflow orchestration
+- *Go tool* (org2gdocs-api): Stateless API client for Google Docs
+- *Communication*: S-expressions via stdin/stdout
+
+* Technical Decisions
+
+** Decision 1: Emacs-Only Runtime
+*** Decision
+All sync operations occur within an interactive Emacs session. The system is invoked via Emacs keybindings, never as a standalone CLI tool.
+
+*** Rationale
+- Leverage Emacs for org parsing (org-element)
+- Native babel execution without batch-mode complexity
+- Real-time user feedback in minibuffer
+- Respect user's Emacs configuration
+- Direct buffer manipulation
+
+*** Pros
++ No need to invoke Emacs in batch mode
++ User's org-mode configuration is automatically respected
++ Can show progress and prompts interactively
++ Native org-element parsing is canonical
++ Babel execution uses user's configured languages
+
+*** Cons
+- Requires Emacs to be running (not a concern given use case)
+- Cannot be used from command line directly
+
+** Decision 2: S-Expressions for IPC
+*** Decision
+Communication between Emacs and Go tool uses S-expressions, not JSON.
+
+*** Rationale
+S-expressions are Emacs' native data format.
+
+*** Pros
++ Native to Emacs (read/prin1-to-string built-in)
++ More readable than JSON for Lisp developers
++ Type preservation (symbols vs strings)
++ Can include comments
++ Simpler parsing in Go (just strings and lists)
+
+*** Cons
+- Less common than JSON (but irrelevant since only Emacs uses this)
+
+** Decision 3: Go Tool is Stateless
+*** Decision
+The Go tool maintains no state between invocations. All state lives in the org-mode file.
+
+*** Rationale
+Org-mode file is the single source of truth.
+
+*** Pros
++ Simpler implementation (no state management in Go)
++ No risk of state desync between tool and file
++ Tool is a pure function: input → API calls → output
++ Easier to debug and test
++ Multiple documents can be managed independently
+
+*** Cons
+- Position map and metadata must be stored in org file
+
+** Decision 4: Full Document Replacement
+*** Decision
+Each push operation replaces the entire Google Doc, not incremental updates.
+
+*** Rationale
+Simpler implementation and acceptable for collaboration workflow.
+
+*** Pros
++ No complex diffing or merging logic
++ Guaranteed consistency between org and Google Doc
++ Simpler position tracking
++ Easier to implement and debug
+
+*** Cons
+- Loses Google Doc edit history on each push
+- Cannot preserve Google-Doc-specific formatting changes
+- Higher API usage (but within limits for typical documents)
+
+** Decision 5: Comment-Centric Collaboration
+*** Decision
+Only comments and text change suggestions flow back from Google Docs. Style changes, formatting adjustments, and layout modifications are ignored.
+
+*** Rationale
+Google Docs is a collaboration surface, not a co-authoring environment.
+
+*** Pros
++ Clear boundaries on what's supported
++ Simpler implementation
++ Users understand the workflow: comment in Google Docs, edit in org-mode
++ No ambiguity about conflict resolution
+
+*** Cons
+- Cannot accept style changes made in Google Docs
+- Users must understand this is comment/review-only
+
+** Decision 6: CUSTOM_ID for Position Anchoring
+*** Decision
+Use org-mode's native CUSTOM_ID property for headlines. Generate hierarchical IDs for non-headline elements (paragraphs, lists, tables).
+
+*** Rationale
+Leverage first-class org-mode features where possible.
+
+*** Pros
++ Headlines use standard org feature
++ IDs are human-readable (sec-intro, sec-methodology)
++ Stable across edits
++ Works with existing org tooling
++ Hierarchical IDs for paragraphs are debuggable (sec-intro/para-0)
+
+*** Cons
+- Must auto-generate CUSTOM_IDs if user hasn't provided them
+- Paragraph IDs regenerate if content is reordered
+
+** Decision 7: Position Map in Org File
+*** Decision
+Store the org-id → google-doc-index mapping in the GDOC_METADATA section of the org file as an evaluable S-expression.
+
+*** Rationale
+Single source of truth, version controlled with document.
+
+*** Pros
++ Survives Emacs restarts
++ Version controlled
++ Can be inspected/debugged
++ No external state files
+
+*** Cons
+- Metadata section in org file (but marked :noexport: and with warnings)
+
+** Decision 8: TODO States for Comment Management
+*** Decision
+Comments appear as TODO items in org-mode. Users change state (TODO→DONE) to mark comments as resolved.
+
+*** Rationale
+Leverage org-mode's native TODO functionality.
+
+*** Pros
++ Familiar workflow for org-mode users
++ Full org-agenda integration
++ Can clock time, add notes, set priorities
++ Custom TODO states (WONTFIX, DEFERRED) supported
++ Automatic state logging
+
+*** Cons
+- None (this is the ideal design)
+
+** Decision 9: Images as PNG Files
+*** Decision
+Images are passed to the Go tool as file paths, and all images (including SVG) are converted to PNG before upload.
+
+*** Rationale
+Google Docs doesn't support SVG. File paths avoid base64 bloat.
+
+*** Pros
++ Simpler than base64 encoding in S-expressions
++ Go tool can read files directly
++ Can handle large images efficiently
+
+*** Cons
+- Temporary files needed for babel-generated images
+- Must convert SVG to PNG (but this is necessary anyway)
+
+** Decision 10: Babel Execution on Push
+*** Decision
+Babel blocks are executed explicitly when pushing, not automatically.
+
+*** Rationale
+Give user control over execution.
+
+*** Pros
++ User controls when code runs
++ Follows org-mode's principle of explicit execution
++ Can skip execution if results are already cached
+
+*** Cons
+- User must remember to execute babel blocks before push
+
+* Invariants
+
+These are absolute constraints that must be enforced throughout the implementation.
+
+** INV-1: Emacs Runtime Invariant
+All sync operations MUST occur within an interactive Emacs session. The system is NEVER invoked outside of Emacs.
+
+** INV-2: State in Org File Invariant
+ALL system state MUST be stored in the org-mode file using first-class org-mode features. The Go tool MUST be stateless and MUST NOT maintain any persistent state between invocations.
+
+** INV-3: Org as Source of Truth Invariant
+The org-mode file is the single source of truth for document content. Google Docs is ONLY a collaboration surface. Content changes made in Google Docs MUST be flagged for review, not automatically applied.
+
+** INV-4: Metadata Immutability Invariant
+The GDOC_METADATA section MUST be clearly marked as machine-managed. Users MUST NOT edit it manually except for changing TODO states on comment items. The section MUST include prominent warnings about manual editing.
+
+** INV-5: First-Class Org Features Invariant
+The system MUST use first-class org-mode features wherever possible:
+- CUSTOM_ID properties for stable IDs
+- TODO states for comment management
+- Properties drawers for metadata
+- Links for navigation
+- Tags for section classification (:noexport:)
+
+** INV-6: Comment Markers are Emacs Artifacts Invariant
+Comment markers ([[id:comment-xyz][•]]) MUST be inserted and managed solely by Emacs. They MUST NOT be sent to the Go tool. The Go tool MUST NOT be aware of their existence.
+
+** INV-7: Position Map Synchronization Invariant
+The position map (org-id → google-doc-index) MUST be updated on every push and MUST be used on every pull. The map MUST be stored in the GDOC_METADATA section in the org file.
+
+** INV-8: Stateless API Tool Invariant
+The Go tool MUST be a pure function: given input S-expression, make API calls, return output S-expression. It MUST NOT read or write files except for:
+- OAuth credentials/tokens (in configured paths)
+- Image files (paths provided in input)
+
+** INV-9: Full Replacement Invariant
+Every push operation MUST replace the entire Google Doc content. Incremental updates are NOT supported.
+
+** INV-10: Error Visibility Invariant
+All errors from the Go tool MUST be returned as structured S-expressions with error codes and messages. Emacs MUST display these errors clearly to the user.
+
+** INV-11: CUSTOM_ID Generation Invariant
+If a headline lacks a CUSTOM_ID, the system MUST generate one automatically from the headline text. Generated IDs MUST be stable (same headline text → same ID) and human-readable.
+
+** INV-12: Comment Resolution Workflow Invariant
+Comments marked as DONE (or custom done states) MUST be resolved in Google Docs on the next push. Comments marked as WONTFIX or DEFERRED MUST remain open in Google Docs.
+
+** INV-13: XDG Standards Invariant
+The Go tool MUST respect XDG Base Directory standards for configuration and data storage:
+- Configuration: $XDG_CONFIG_HOME/org2gdocs/ (defaults to ~/.config/org2gdocs/)
+- Data: $XDG_DATA_HOME/org2gdocs/ (defaults to ~/.local/share/org2gdocs/)
+- Cache: $XDG_CACHE_HOME/org2gdocs/ (defaults to ~/.cache/org2gdocs/)
+
+** INV-14: TOML Configuration Invariant
+ALL configuration files MUST use TOML format. JSON and YAML are NOT permitted for configuration. This includes:
+- User configuration files
+- Project configuration files
+- Any settings that need to be serialized
+
+Note: OAuth credentials from Google are JSON (required by Google), but user-editable config MUST be TOML.
+
+** INV-15: macOS-Only Invariant
+The tool targets macOS exclusively for the initial implementation. Do NOT add cross-platform abstractions, Windows compatibility, or Linux-specific workarounds. Use macOS-native features freely:
+- macOS system paths
+- macOS defaults for XDG paths
+- Native macOS commands when appropriate
+
+** INV-16: Latest Tooling Invariant
+The implementation MUST target the absolute latest stable versions:
+- Emacs 30+ (use latest features without compatibility shims)
+- Go 1.23+ (use latest language features)
+- Latest Google API client libraries
+- Latest org-mode features
+
+Do NOT add compatibility code for older versions.
+
+** INV-17: Debug Mode Invariant
+Both components MUST implement comprehensive debug modes:
+- Go tool: --debug flag that outputs verbose logging to stderr
+- Emacs mode: gh/org-docs-debug-mode variable that enables detailed logging
+- Debug output MUST include: API calls, S-expression exchanges, position mapping, state changes
+
+** INV-18: Real Document Testing Invariant
+The implementation MUST include a real Google Document used for testing. The test document MUST:
+- Have a known document ID stored in the codebase
+- Contain examples of all supported features
+- Be used in automated/manual testing
+- Have comments added for testing the pull workflow
+
+* Implementation Tasks
+
+** Task 1: Go Tool - OAuth Setup and S-expression Parser
+*** Description
+Implement the foundational Go tool infrastructure:
+- OAuth2 flow for Google API authentication
+- S-expression parser (input from stdin)
+- S-expression writer (output to stdout)
+- TOML configuration management following XDG standards
+- Debug mode with --debug flag
+- Error handling structure
+
+*** Dependencies
+None (this is the foundation)
+
+*** Deliverables
+- ~main.go~ with basic structure and --debug flag
+- ~auth.go~ with OAuth2 flow
+- ~sexp/~ package for parsing and writing S-expressions
+- ~config/~ package for TOML configuration and XDG paths
+- ~debug/~ package for debug logging
+- Standalone ~org2gdocs-api auth~ command for initial OAuth setup
+- Default config.toml file
+
+*** Acceptance Criteria
+- Can run ~org2gdocs-api auth~ and complete OAuth flow
+- Can read S-expression from stdin
+- Can write S-expression to stdout
+- Config stored in $XDG_CONFIG_HOME/org2gdocs/config.toml
+- OAuth token stored in $XDG_DATA_HOME/org2gdocs/token.json
+- --debug flag enables verbose logging to stderr
+- Respects XDG environment variables with proper defaults
+
+*** Compliance Notes
+- MUST comply with INV-8 (Stateless API Tool)
+- MUST comply with INV-10 (Error Visibility)
+- MUST comply with INV-13 (XDG Standards)
+- MUST comply with INV-14 (TOML Configuration)
+- MUST comply with INV-15 (macOS-Only - use macOS defaults)
+- MUST comply with INV-16 (Latest Tooling - Go 1.23+)
+- MUST comply with INV-17 (Debug Mode)
+
+*** Implementation Notes
+XDG path resolution:
+#+begin_src go
+// config/xdg.go
+package config
+
+import (
+    "os"
+    "path/filepath"
+)
+
+func GetConfigDir() string {
+    if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
+        return filepath.Join(xdgConfig, "org2gdocs")
+    }
+    home, _ := os.UserHomeDir()
+    return filepath.Join(home, ".config", "org2gdocs")
+}
+
+func GetDataDir() string {
+    if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+        return filepath.Join(xdgData, "org2gdocs")
+    }
+    home, _ := os.UserHomeDir()
+    return filepath.Join(home, ".local", "share", "org2gdocs")
+}
+
+func GetCacheDir() string {
+    if xdgCache := os.Getenv("XDG_CACHE_HOME"); xdgCache != "" {
+        return filepath.Join(xdgCache, "org2gdocs")
+    }
+    home, _ := os.UserHomeDir()
+    return filepath.Join(home, ".cache", "org2gdocs")
+}
+#+end_src
+
+TOML configuration:
+#+begin_src go
+// config/config.go
+package config
+
+import (
+    "github.com/pelletier/go-toml/v2"
+    "os"
+    "path/filepath"
+)
+
+type Config struct {
+    // Google API credentials (JSON file from Google)
+    CredentialsPath string `toml:"credentials_path"`
+    
+    // OAuth token storage
+    TokenPath string `toml:"token_path"`
+    
+    // Debug settings
+    Debug bool `toml:"debug"`
+}
+
+func LoadConfig() (*Config, error) {
+    configPath := filepath.Join(GetConfigDir(), "config.toml")
+    
+    // Create default config if it doesn't exist
+    if _, err := os.Stat(configPath); os.IsNotExist(err) {
+        defaultConfig := &Config{
+            CredentialsPath: filepath.Join(GetConfigDir(), "credentials.json"),
+            TokenPath:       filepath.Join(GetDataDir(), "token.json"),
+            Debug:           false,
+        }
+        return defaultConfig, SaveConfig(defaultConfig)
+    }
+    
+    data, err := os.ReadFile(configPath)
+    if err != nil {
+        return nil, err
+    }
+    
+    var cfg Config
+    err = toml.Unmarshal(data, &cfg)
+    return &cfg, err
+}
+
+func SaveConfig(cfg *Config) error {
+    configDir := GetConfigDir()
+    os.MkdirAll(configDir, 0755)
+    
+    data, err := toml.Marshal(cfg)
+    if err != nil {
+        return err
+    }
+    
+    configPath := filepath.Join(configDir, "config.toml")
+    return os.WriteFile(configPath, data, 0644)
+}
+#+end_src
+
+Debug logging:
+#+begin_src go
+// debug/debug.go
+package debug
+
+import (
+    "fmt"
+    "os"
+    "time"
+)
+
+var DebugEnabled bool
+
+func Log(format string, args ...interface{}) {
+    if DebugEnabled {
+        timestamp := time.Now().Format("15:04:05.000")
+        fmt.Fprintf(os.Stderr, "[DEBUG %s] ", timestamp)
+        fmt.Fprintf(os.Stderr, format+"\n", args...)
+    }
+}
+
+func LogSexp(label string, sexp string) {
+    if DebugEnabled {
+        fmt.Fprintf(os.Stderr, "[DEBUG SEXP %s]\n%s\n", label, sexp)
+    }
+}
+#+end_src
+
+Main with debug flag:
+#+begin_src go
+// main.go
+package main
+
+import (
+    "flag"
+    "fmt"
+    "os"
+    
+    "org2gdocs/config"
+    "org2gdocs/debug"
+)
+
+func main() {
+    authCmd := flag.NewFlagSet("auth", flag.ExitOnError)
+    
+    // Global flags
+    debugFlag := flag.Bool("debug", false, "Enable debug logging")
+    
+    flag.Parse()
+    
+    debug.DebugEnabled = *debugFlag
+    
+    if len(os.Args) < 2 {
+        fmt.Fprintf(os.Stderr, "Usage: org2gdocs-api [--debug] <command>\n")
+        fmt.Fprintf(os.Stderr, "Commands:\n")
+        fmt.Fprintf(os.Stderr, "  auth    - Authenticate with Google\n")
+        os.Exit(1)
+    }
+    
+    cmd := os.Args[1]
+    
+    switch cmd {
+    case "auth":
+        authCmd.Parse(os.Args[2:])
+        handleAuth()
+    default:
+        // Read operation from stdin
+        handleOperation()
+    }
+}
+#+end_src
+
+OAuth setup:
+#+begin_src go
+// auth.go
+func SetupOAuth(credentialsPath, tokenPath string) (*http.Client, error) {
+    debug.Log("Reading credentials from: %s", credentialsPath)
+    
+    b, err := os.ReadFile(credentialsPath)
+    if err != nil {
+        return nil, fmt.Errorf("unable to read credentials: %v", err)
+    }
+    
+    config, err := google.ConfigFromJSON(b, docs.DocumentsScope, drive.DriveFileScope)
+    if err != nil {
+        return nil, fmt.Errorf("unable to parse credentials: %v", err)
+    }
+    
+    debug.Log("Checking for existing token at: %s", tokenPath)
+    token := getTokenFromFile(tokenPath)
+    if token == nil {
+        debug.Log("No token found, starting OAuth flow")
+        token = getTokenFromWeb(config)
+        saveToken(tokenPath, token)
+    } else {
+        debug.Log("Using existing token")
+    }
+    
+    return config.Client(context.Background(), token), nil
+}
+#+end_src
+
+S-expression parsing (simple recursive descent):
+#+begin_src go
+// sexp/parser.go
+type Sexp interface{}
+type List []Sexp
+type Symbol string
+type String string
+type Number int64
+
+func Parse(input string) (Sexp, error) {
+    debug.Log("Parsing S-expression (length: %d bytes)", len(input))
+    tokens := tokenize(input)
+    expr, _, err := parseExpr(tokens, 0)
+    if err != nil {
+        debug.Log("Parse error: %v", err)
+    }
+    return expr, err
+}
+#+end_src
+
+*** Testing
+- OAuth flow completes successfully
+- Can parse valid S-expressions
+- Returns proper error S-expressions for malformed input
+
+** Task 2: Go Tool - Push Operation (Document Creation and Update)
+*** Description
+Implement the core push operation:
+- Parse content S-expression into internal structure
+- Convert org content to Google Docs API requests
+- Create new Google Doc OR update existing doc
+- Handle text formatting (bold, italic, underline, strikethrough, code)
+- Handle document structure (headings, paragraphs, lists, tables)
+- Return position map and document metadata
+
+*** Dependencies
+Task 1 (OAuth and S-expression parser)
+
+*** Deliverables
+- ~push.go~ with push operation handler
+- ~content.go~ for content structure definitions
+- ~gdocs/~ package for Google Docs API interaction
+- ~formatter.go~ for text formatting conversion
+
+*** Acceptance Criteria
+- Can create a new Google Doc from org content
+- Can update an existing Google Doc (full replacement)
+- Correctly applies text formatting
+- Correctly creates headings (H1-H6 based on org level)
+- Correctly creates lists (ordered/unordered)
+- Correctly creates tables
+- Returns position map mapping custom-id → gdoc-index
+
+*** Compliance Notes
+- MUST comply with INV-8 (Stateless API Tool)
+- MUST comply with INV-9 (Full Replacement)
+- MUST comply with INV-6 (ignore comment markers if present)
+
+*** Implementation Notes
+Content structure:
+#+begin_src go
+type Content struct {
+    Type       string            // "heading", "paragraph", "list", "table", etc.
+    Level      int               // For headings
+    Text       string
+    CustomID   string
+    Formatting []FormatRange
+    Items      []string          // For lists
+    Rows       [][]string        // For tables
+}
+
+type FormatRange struct {
+    Type  string  // "bold", "italic", "underline", "strikethrough", "code"
+    Start int
+    End   int
+    URL   string  // For links
+}
+#+end_src
+
+Google Docs API approach - batch all requests:
+#+begin_src go
+func PushDocument(docID string, content []Content) (*PushResult, error) {
+    requests := []*docs.Request{}
+    
+    // If docID exists, delete all content first
+    if docID != "" {
+        requests = append(requests, deleteContentRequest())
+    }
+    
+    // Build insert requests
+    index := int64(1) // Start after title
+    posMap := make(map[string]Position)
+    
+    for _, c := range content {
+        req, newIndex := buildInsertRequest(c, index)
+        requests = append(requests, req...)
+        posMap[c.CustomID] = Position{Index: index, Type: c.Type}
+        index = newIndex
+    }
+    
+    // Execute batch update
+    _, err := docsService.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+        Requests: requests,
+    }).Do()
+    
+    return &PushResult{
+        DocumentID:  docID,
+        PositionMap: posMap,
+    }, err
+}
+#+end_src
+
+*** Testing
+- Create new doc with simple content
+- Update existing doc
+- Verify formatting is correct
+- Verify position map is accurate
+
+** Task 3: Go Tool - Image Handling
+*** Description
+Implement image upload functionality:
+- Read image files from provided paths
+- Convert SVG to PNG (using external library)
+- Upload images to Google Docs
+- Insert images at correct positions
+
+*** Dependencies
+Task 2 (Push operation foundation)
+
+*** Deliverables
+- ~image.go~ for image processing
+- Integration with push operation
+- SVG to PNG conversion
+
+*** Acceptance Criteria
+- Can read PNG images from file paths
+- Can convert SVG to PNG
+- Can upload images to Google Docs
+- Images appear at correct positions in document
+
+*** Compliance Notes
+- MUST comply with INV-8 (Go tool can read image files)
+
+*** Implementation Notes
+Use a library for SVG to PNG conversion:
+#+begin_src go
+import "github.com/h2non/go-is-svg"
+import "github.com/srwiley/oksvg"
+import "github.com/srwiley/rasterx"
+
+func convertSVGToPNG(svgPath string) ([]byte, error) {
+    // Read SVG
+    svgData, err := os.ReadFile(svgPath)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Parse and rasterize
+    icon, _ := oksvg.ReadIconStream(bytes.NewReader(svgData))
+    w, h := int(icon.ViewBox.W), int(icon.ViewBox.H)
+    img := image.NewRGBA(image.Rect(0, 0, w, h))
+    scanner := rasterx.NewScannerGV(w, h, img, img.Bounds())
+    raster := rasterx.NewDasher(w, h, scanner)
+    icon.Draw(raster, 1.0)
+    
+    // Encode to PNG
+    var buf bytes.Buffer
+    png.Encode(&buf, img)
+    return buf.Bytes(), nil
+}
+#+end_src
+
+Google Docs image insertion:
+#+begin_src go
+func insertImage(imagePath string, index int64) (*docs.Request, error) {
+    var imageBytes []byte
+    var err error
+    
+    if strings.HasSuffix(imagePath, ".svg") {
+        imageBytes, err = convertSVGToPNG(imagePath)
+    } else {
+        imageBytes, err = os.ReadFile(imagePath)
+    }
+    
+    if err != nil {
+        return nil, err
+    }
+    
+    // Upload to Drive first, then insert reference
+    // OR use inline image if small enough
+    return &docs.Request{
+        InsertInlineImage: &docs.InsertInlineImageRequest{
+            Location: &docs.Location{Index: index},
+            Uri:      uploadImageToDrive(imageBytes),
+        },
+    }, nil
+}
+#+end_src
+
+*** Testing
+- Upload PNG image
+- Convert and upload SVG image
+- Verify images appear in correct positions
+
+** Task 4: Go Tool - Pull Operation (Comment Retrieval)
+*** Description
+Implement the pull operation:
+- Fetch comments from Google Doc
+- Map comment positions to org custom-ids using position map
+- Fetch suggested edits (if any)
+- Extract author names from emails
+- Return structured comment data
+
+*** Dependencies
+Task 1 (OAuth and S-expression parser)
+
+*** Deliverables
+- ~pull.go~ with pull operation handler
+- ~comments.go~ for comment structure definitions
+- Author name extraction logic
+
+*** Acceptance Criteria
+- Can fetch all comments from a Google Doc
+- Correctly maps comment positions to custom-ids
+- Extracts quoted text for text-anchored comments
+- Handles document-level comments (no position anchor)
+- Returns author display names
+
+*** Compliance Notes
+- MUST comply with INV-8 (Stateless API Tool)
+
+*** Implementation Notes
+Comment structure:
+#+begin_src go
+type Comment struct {
+    ID          string
+    AuthorEmail string
+    AuthorName  string
+    Text        string
+    Created     string
+    Resolved    bool
+    Anchor      CommentAnchor
+}
+
+type CommentAnchor struct {
+    CustomID    string  // Mapped from position
+    SegmentID   string  // For paragraphs: sec-intro/para-1
+    StartIndex  int
+    EndIndex    int
+    QuotedText  string
+}
+#+end_src
+
+Mapping comments to custom-ids:
+#+begin_src go
+func mapCommentToCustomID(comment *docs.Comment, posMap map[string]Position) CommentAnchor {
+    if comment.Anchor == nil {
+        return CommentAnchor{CustomID: ""} // Document-level comment
+    }
+    
+    // Find which custom-id contains this position
+    commentStart := comment.Anchor.TextRange.StartIndex
+    
+    for customID, pos := range posMap {
+        if commentStart >= pos.Index && commentStart < pos.EndIndex {
+            return CommentAnchor{
+                CustomID:   customID,
+                StartIndex: int(commentStart - pos.Index),
+                QuotedText: extractQuotedText(commentStart, comment.Anchor.TextRange.EndIndex),
+            }
+        }
+    }
+    
+    return CommentAnchor{CustomID: "unknown"}
+}
+#+end_src
+
+Author name extraction:
+#+begin_src go
+func extractDisplayName(email string) string {
+    // Simple heuristic: jane.smith@company.com -> Jane Smith
+    parts := strings.Split(email, "@")
+    if len(parts) == 0 {
+        return email
+    }
+    
+    nameParts := strings.Split(parts[0], ".")
+    var names []string
+    for _, part := range nameParts {
+        names = append(names, strings.Title(part))
+    }
+    return strings.Join(names, " ")
+}
+#+end_src
+
+*** Testing
+- Fetch comments from doc with various comment types
+- Verify position mapping is correct
+- Verify quoted text extraction
+
+** Task 5: Go Tool - Comment Resolution
+*** Description
+Implement comment resolution on push:
+- Accept list of comment IDs to resolve
+- Mark comments as resolved in Google Docs
+- Handle errors gracefully (comment already resolved, comment not found)
+
+*** Dependencies
+Task 2 (Push operation)
+Task 4 (Pull operation - comment structure)
+
+*** Deliverables
+- ~resolve.go~ for comment resolution
+- Integration with push operation
+
+*** Acceptance Criteria
+- Can resolve multiple comments in a single push
+- Handles already-resolved comments gracefully
+- Returns list of successfully resolved comments
+- Handles missing comment IDs with appropriate errors
+
+*** Compliance Notes
+- MUST comply with INV-12 (Comment Resolution Workflow)
+
+*** Implementation Notes
+#+begin_src go
+func resolveComments(docID string, commentIDs []string) ([]string, error) {
+    resolved := []string{}
+    
+    for _, commentID := range commentIDs {
+        // Use Google Docs API to resolve comment
+        _, err := docsService.Documents.Comments.
+            Patch(docID, commentID, &docs.Comment{
+                Resolved: true,
+            }).Do()
+        
+        if err != nil {
+            // Log but continue with other comments
+            log.Printf("Failed to resolve comment %s: %v", commentID, err)
+        } else {
+            resolved = append(resolved, commentID)
+        }
+    }
+    
+    return resolved, nil
+}
+#+end_src
+
+*** Testing
+- Resolve single comment
+- Resolve multiple comments
+- Handle already-resolved comment
+- Handle non-existent comment ID
+
+** Task 6: Emacs Package - Core Infrastructure and Configuration
+*** Description
+Create the Emacs package foundation:
+- Package definition and dependencies (Emacs 30+ features)
+- Configuration options (credentials path, token path)
+- Minor mode definition
+- Keybindings
+- Helper functions for metadata access
+- Debug mode implementation
+
+*** Dependencies
+None (this is the Emacs foundation)
+
+*** Deliverables
+- ~gh-org-docs.el~ with package header and structure
+- Configuration variables
+- Minor mode definition
+- Debug mode with logging
+- Utility functions for accessing org file metadata
+
+*** Acceptance Criteria
+- Package loads without errors on Emacs 30+
+- Minor mode can be enabled
+- Configuration variables work
+- Can read/write GDOC_ID and other metadata from file properties
+- Debug mode logs operations to *gh-org-docs-debug* buffer
+
+*** Compliance Notes
+- MUST comply with INV-1 (Emacs Runtime)
+- MUST comply with INV-2 (State in Org File)
+- MUST comply with INV-5 (First-Class Org Features)
+- MUST comply with INV-16 (Latest Tooling - Emacs 30+)
+- MUST comply with INV-17 (Debug Mode)
+
+*** Implementation Notes
+Package structure:
+#+begin_src elisp
+;;; gh-org-docs.el --- Sync org-mode documents with Google Docs -*- lexical-binding: t -*-
+
+;; Copyright (C) 2026
+
+;; Author: Your Name
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "30.1") (org "9.7"))
+;; Keywords: org-mode, google-docs, collaboration
+;; URL: https://github.com/yourname/gh-org-docs
+
+;;; Commentary:
+;; Sync org-mode documents with Google Docs for collaboration.
+;; Google Docs is used as a collaboration surface for comments only.
+;; Org-mode remains the single source of truth.
+
+;;; Code:
+
+(require 'org)
+(require 'org-element)
+
+(defgroup gh-org-docs nil
+  "Sync org-mode with Google Docs."
+  :group 'org
+  :prefix "gh/org-docs-")
+
+(defcustom gh/org-docs-credentials-path
+  (expand-file-name "~/.config/org2gdocs/credentials.json")
+  "Path to Google API credentials file."
+  :type 'file
+  :group 'gh-org-docs)
+
+(defcustom gh/org-docs-token-path
+  (expand-file-name "~/.local/share/org2gdocs/token.json")
+  "Path to OAuth token file."
+  :type 'file
+  :group 'gh-org-docs)
+
+(defcustom gh/org-docs-api-command "org2gdocs-api"
+  "Command to invoke the Google Docs API tool."
+  :type 'string
+  :group 'gh-org-docs)
+
+(defvar gh/org-docs-debug-mode nil
+  "Enable debug logging when non-nil.")
+
+(defvar gh/org-docs--debug-buffer "*gh-org-docs-debug*"
+  "Buffer name for debug output.")
+
+(defun gh/org-docs--debug (format-string &rest args)
+  "Log debug message if `gh/org-docs-debug-mode' is enabled."
+  (when gh/org-docs-debug-mode
+    (with-current-buffer (get-buffer-create gh/org-docs--debug-buffer)
+      (goto-char (point-max))
+      (insert (format "[%s] " (format-time-string "%H:%M:%S")))
+      (insert (apply #'format format-string args))
+      (insert "\n"))))
+
+(defun gh/org-docs-toggle-debug ()
+  "Toggle debug mode."
+  (interactive)
+  (setq gh/org-docs-debug-mode (not gh/org-docs-debug-mode))
+  (message "gh-org-docs debug mode: %s" 
+           (if gh/org-docs-debug-mode "enabled" "disabled"))
+  (when gh/org-docs-debug-mode
+    (display-buffer (get-buffer-create gh/org-docs--debug-buffer))))
+
+(defun gh/org-docs-clear-debug-log ()
+  "Clear the debug log buffer."
+  (interactive)
+  (when (get-buffer gh/org-docs--debug-buffer)
+    (with-current-buffer gh/org-docs--debug-buffer
+      (erase-buffer))
+    (message "Debug log cleared")))
+
+;;;###autoload
+(define-minor-mode gh/org-docs-mode
+  "Minor mode for syncing org documents with Google Docs."
+  :lighter " GDoc"
+  :keymap (let ((map (make-sparse-keymap)))
+            (define-key map (kbd "C-c g s") 'gh/org-docs-dwim)
+            (define-key map (kbd "C-c g p") 'gh/org-docs-push)
+            (define-key map (kbd "C-c g f") 'gh/org-docs-pull)
+            (define-key map (kbd "C-c g c") 'gh/org-docs-clean)
+            (define-key map (kbd "C-c g o") 'gh/org-docs-open-in-browser)
+            (define-key map (kbd "C-c g d") 'gh/org-docs-toggle-debug)
+            map))
+
+;; Metadata access functions
+(defun gh/org-docs--get-doc-id ()
+  "Get GDOC_ID from file properties."
+  (gh/org-docs--debug "Getting GDOC_ID from buffer")
+  (save-excursion
+    (goto-char (point-min))
+    (when (re-search-forward "^#\\+GDOC_ID: \\(.+\\)$" nil t)
+      (let ((id (match-string 1)))
+        (gh/org-docs--debug "Found GDOC_ID: %s" id)
+        id))))
+
+(defun gh/org-docs--set-doc-id (doc-id)
+  "Set GDOC_ID in file properties."
+  (gh/org-docs--debug "Setting GDOC_ID to: %s" doc-id)
+  (save-excursion
+    (goto-char (point-min))
+    (if (re-search-forward "^#\\+GDOC_ID: " nil t)
+        (progn
+          (delete-region (point) (line-end-position))
+          (insert doc-id))
+      ;; Insert after title
+      (when (re-search-forward "^#\\+TITLE: " nil t)
+        (end-of-line)
+        (insert "\n#+GDOC_ID: " doc-id)))))
+
+(defun gh/org-docs--get-last-push ()
+  "Get last push timestamp."
+  (save-excursion
+    (goto-char (point-min))
+    (when (re-search-forward "^#\\+GDOC_LAST_PUSH: \\(.+\\)$" nil t)
+      (match-string 1))))
+
+(provide 'gh-org-docs)
+;;; gh-org-docs.el ends here
+#+end_src
+
+*** Testing
+- Load package
+- Enable minor mode
+- Access metadata functions
+
+** Task 7: Emacs Package - Content Conversion and Push
+*** Description
+Implement org-mode to S-expression conversion and push operation:
+- Parse org buffer with org-element
+- Convert elements to S-expression format
+- Generate or ensure CUSTOM_IDs
+- Execute babel blocks
+- Export images to temporary files
+- Call Go tool with push operation
+- Update metadata with results
+
+*** Dependencies
+Task 6 (Emacs core infrastructure)
+Task 2 (Go tool push operation)
+
+*** Deliverables
+- ~gh-org-docs-push.el~ (or functions in main file)
+- CUSTOM_ID generation
+- Org element to S-expression conversion
+- Babel execution integration
+- Image export handling
+
+*** Acceptance Criteria
+- Can convert org buffer to S-expression
+- Generates CUSTOM_IDs for headlines without them
+- Generates hierarchical IDs for paragraphs/lists/tables
+- Executes babel blocks before push
+- Exports images to temporary files
+- Successfully calls Go tool and creates/updates Google Doc
+- Updates GDOC_ID and position map in org file
+
+*** Compliance Notes
+- MUST comply with INV-5 (First-Class Org Features)
+- MUST comply with INV-6 (Don't send comment markers)
+- MUST comply with INV-11 (CUSTOM_ID Generation)
+
+*** Implementation Notes
+CUSTOM_ID generation:
+#+begin_src elisp
+(defun gh/org-docs--ensure-custom-id (headline)
+  "Ensure headline has CUSTOM_ID, generate if missing."
+  (let ((existing-id (org-element-property :CUSTOM_ID headline)))
+    (or existing-id
+        (let* ((title (org-element-property :raw-value headline))
+               (id (gh/org-docs--generate-headline-id title)))
+          (save-excursion
+            (goto-char (org-element-property :begin headline))
+            (org-set-property "CUSTOM_ID" id))
+          id))))
+
+(defun gh/org-docs--generate-headline-id (title)
+  "Generate CUSTOM_ID from headline title."
+  (let ((slug (downcase
+               (replace-regexp-in-string
+                "[^a-z0-9-]" ""
+                (replace-regexp-in-string " " "-" title)))))
+    (format "sec-%s" slug)))
+#+end_src
+
+Element conversion:
+#+begin_src elisp
+(defun gh/org-docs--element-to-sexp (element parent-id counters)
+  "Convert org ELEMENT to S-expression."
+  (pcase (org-element-type element)
+    ('headline
+     (let ((custom-id (gh/org-docs--ensure-custom-id element)))
+       `(heading
+         :level ,(org-element-property :level element)
+         :text ,(org-element-property :raw-value element)
+         :custom-id ,custom-id)))
+    
+    ('paragraph
+     (let* ((type "para")
+            (count (gethash type counters 0))
+            (elem-id (format "%s/%s-%d" parent-id type count)))
+       (puthash type (1+ count) counters)
+       `(paragraph
+         :text ,(gh/org-docs--paragraph-text-clean element)
+         :custom-id ,elem-id
+         :formatting ,(gh/org-docs--extract-formatting element))))
+    
+    ;; ... more cases
+    ))
+
+(defun gh/org-docs--paragraph-text-clean (element)
+  "Extract paragraph text, removing comment markers."
+  (let ((text (org-element-interpret-data element)))
+    (replace-regexp-in-string
+     "\\[\\[id:comment-[^]]+\\]\\[•\\]\\]" "" text)))
+#+end_src
+
+Main push function:
+#+begin_src elisp
+(defun gh/org-docs-push ()
+  "Push current buffer to Google Docs."
+  (interactive)
+  (unless gh/org-docs-mode
+    (user-error "gh/org-docs-mode is not enabled"))
+  
+  (save-buffer)
+  
+  ;; Execute babel blocks
+  (when (y-or-n-p "Execute babel blocks before push? ")
+    (org-babel-execute-buffer))
+  
+  ;; Convert buffer to S-expression
+  (let* ((content (gh/org-docs--buffer-to-content-sexp))
+         (doc-id (gh/org-docs--get-doc-id))
+         (comments-to-resolve (gh/org-docs--get-resolved-comment-ids))
+         (result (gh/org-docs--call-api 'push
+                   `(:document-id ,doc-id
+                     :title ,(gh/org-docs--get-title)
+                     :content ,content
+                     :comments-to-resolve ,comments-to-resolve))))
+    
+    ;; Update metadata
+    (gh/org-docs--set-doc-id (plist-get result :document-id))
+    (gh/org-docs--save-position-map (plist-get result :position-map))
+    (gh/org-docs--set-last-push (current-time-string))
+    
+    ;; Archive resolved comments
+    (gh/org-docs--archive-resolved-comments)
+    
+    (message "Pushed to Google Docs: %s" (plist-get result :document-url))))
+#+end_src
+
+*** Testing
+- Push simple document
+- Push document with images
+- Push document with babel results
+- Verify CUSTOM_IDs are generated
+- Verify position map is saved
+
+** Task 8: Emacs Package - Pull Operation and Comment Integration
+*** Description
+Implement comment retrieval and integration:
+- Call Go tool pull operation
+- Parse returned comments
+- Insert comment markers in buffer
+- Create TODO entries in GDOC_METADATA section
+- Update collaborator cache
+
+*** Dependencies
+Task 6 (Emacs core infrastructure)
+Task 4 (Go tool pull operation)
+
+*** Deliverables
+- ~gh-org-docs-pull.el~ (or functions in main file)
+- Comment marker insertion
+- TODO entry creation
+- Metadata section management
+
+*** Acceptance Criteria
+- Can pull comments from Google Docs
+- Inserts [[id:comment-xyz][•]] markers at correct positions
+- Creates TODO entries with all metadata
+- Formats comment text in quote blocks
+- Adds bidirectional links between marker and TODO entry
+- Updates collaborator cache
+
+*** Compliance Notes
+- MUST comply with INV-4 (Metadata Immutability - add warnings)
+- MUST comply with INV-5 (First-Class Org Features - use TODO)
+- MUST comply with INV-6 (Comment Markers are Emacs Artifacts)
+
+*** Implementation Notes
+Pull function:
+#+begin_src elisp
+(defun gh/org-docs-pull ()
+  "Pull comments from Google Docs."
+  (interactive)
+  (unless gh/org-docs-mode
+    (user-error "gh/org-docs-mode is not enabled"))
+  
+  (let* ((doc-id (gh/org-docs--get-doc-id))
+         (pos-map (gh/org-docs--get-position-map))
+         (known-ids (gh/org-docs--get-known-comment-ids))
+         (collab-cache (gh/org-docs--get-collaborator-cache))
+         (result (gh/org-docs--call-api 'pull
+                   `(:document-id ,doc-id
+                     :position-map ,pos-map
+                     :known-comment-ids ,known-ids
+                     :collaborator-cache ,collab-cache)))
+         (comments (plist-get result :comments)))
+    
+    ;; Insert comment markers
+    (gh/org-docs--insert-comment-markers comments)
+    
+    ;; Create/update TODO entries
+    (gh/org-docs--create-comment-todos comments)
+    
+    ;; Update collaborator cache
+    (gh/org-docs--update-collaborator-cache
+     (plist-get result :new-collaborators))
+    
+    (message "Pulled %d comments from Google Docs" (length comments))))
+#+end_src
+
+Comment marker insertion:
+#+begin_src elisp
+(defun gh/org-docs--insert-comment-markers (comments)
+  "Insert comment markers in buffer."
+  (save-excursion
+    (dolist (comment comments)
+      (let* ((anchor (plist-get comment :anchor))
+             (custom-id (plist-get anchor :custom-id))
+             (start-idx (plist-get anchor :start-index))
+             (comment-id (plist-get comment :id)))
+        (when custom-id
+          ;; Find section by custom-id
+          (goto-char (point-min))
+          (when (re-search-forward
+                 (format ":CUSTOM_ID: %s" (regexp-quote custom-id)) nil t)
+            (org-back-to-heading)
+            (org-end-of-subtree)
+            
+            ;; Navigate to approximate position
+            (when start-idx
+              (backward-char (- (point) start-idx)))
+            
+            ;; Insert marker
+            (insert (format "[[id:comment-%s][•]]" comment-id))))))))
+#+end_src
+
+TODO entry creation:
+#+begin_src elisp
+(defun gh/org-docs--create-comment-todos (comments)
+  "Create TODO entries for comments in GDOC_METADATA."
+  (save-excursion
+    ;; Ensure GDOC_METADATA section exists
+    (gh/org-docs--ensure-metadata-section)
+    
+    ;; Navigate to Active Comments section
+    (goto-char (point-min))
+    (re-search-forward "^\\*\\* Active Comments")
+    (org-end-of-subtree)
+    
+    ;; Insert TODO entries
+    (dolist (comment comments)
+      (unless (gh/org-docs--comment-exists-p (plist-get comment :id))
+        (insert (format "\n*** TODO %s - %s\n"
+                       (gh/org-docs--summarize-comment comment)
+                       (plist-get comment :author-name)))
+        (insert ":PROPERTIES:\n")
+        (insert (format ":COMMENT_ID: %s\n" (plist-get comment :id)))
+        (insert (format ":COMMENT_AUTHOR: %s\n" (plist-get comment :author-name)))
+        (insert (format ":COMMENT_EMAIL: %s\n" (plist-get comment :author-email)))
+        (insert (format ":COMMENT_DATE: %s\n" (plist-get comment :created)))
+        (insert (format ":COMMENT_SECTION: %s\n"
+                       (plist-get (plist-get comment :anchor) :custom-id)))
+        (insert ":END:\n\n")
+        (insert "#+begin_quote\n")
+        (insert (plist-get comment :text))
+        (insert "\n#+end_quote\n\n")
+        (insert (format "[[id:comment-%s][← Jump to comment location]]\n"
+                       (plist-get comment :id)))))))
+#+end_src
+
+Metadata section creation:
+#+begin_src elisp
+(defun gh/org-docs--ensure-metadata-section ()
+  "Ensure GDOC_METADATA section exists with proper warnings."
+  (save-excursion
+    (goto-char (point-min))
+    (unless (re-search-forward "^\\* GDOC_METADATA - DO NOT EDIT" nil t)
+      (goto-char (point-max))
+      (insert "\n* ═══════════════════════════════════════════════════════════════════ :noexport:\n")
+      (insert "# WARNING: This section is managed by org2gdocs. Do not edit manually!\n")
+      (insert "# Any manual changes will be overwritten on the next pull/push operation.\n")
+      (insert "#\n")
+      (insert "# To resolve comments: Change TODO → DONE, then run 'org2gdocs push'\n")
+      (insert "# To remove resolved comments: Run 'org2gdocs clean'\n")
+      (insert "* GDOC_METADATA - DO NOT EDIT :noexport:\n")
+      (insert "** Active Comments\n")
+      (insert "** Position Map\n")
+      (insert "#+begin_src emacs-lisp :exports none :results silent\n")
+      (insert "'()\n")
+      (insert "#+end_src\n")
+      (insert "** Collaborator Cache\n")
+      (insert "| Email | Display Name |\n")
+      (insert "|-------+--------------|\n"))))
+#+end_src
+
+*** Testing
+- Pull comments from document
+- Verify markers are inserted correctly
+- Verify TODO entries are created
+- Verify metadata section has warnings
+
+** Task 9: Emacs Package - DWIM Command and Workflow Helpers
+*** Description
+Implement the "Do What I Mean" command and supporting workflow functions:
+- DWIM logic (decide whether to push, pull, or create)
+- Clean command (archive resolved comments)
+- Open in browser command
+- Status display
+
+*** Dependencies
+Task 7 (Push operation)
+Task 8 (Pull operation)
+
+*** Deliverables
+- DWIM command implementation
+- Clean command
+- Open in browser command
+- Helper functions for workflow
+
+*** Acceptance Criteria
+- DWIM correctly decides action based on buffer state
+- Can open Google Doc in browser
+- Can clean resolved comments
+- Provides clear feedback to user
+
+*** Compliance Notes
+- MUST comply with INV-12 (Comment Resolution Workflow)
+
+*** Implementation Notes
+DWIM logic:
+#+begin_src elisp
+(defun gh/org-docs-dwim ()
+  "Do What I Mean for Google Docs sync."
+  (interactive)
+  (unless gh/org-docs-mode
+    (user-error "gh/org-docs-mode is not enabled"))
+  
+  (cond
+   ((not (gh/org-docs--get-doc-id))
+    (when (y-or-n-p "No Google Doc linked. Create new document? ")
+      (gh/org-docs-push)))
+   
+   ((gh/org-docs--has-resolved-comments-p)
+    (message "You have resolved comments. Pushing to sync...")
+    (gh/org-docs-push))
+   
+   ((gh/org-docs--buffer-modified-since-push-p)
+    (when (y-or-n-p "Buffer modified since last push. Push now? ")
+      (gh/org-docs-push)))
+   
+   ((gh/org-docs--should-pull-p)
+    (message "Pulling comments from Google Docs...")
+    (gh/org-docs-pull))
+   
+   (t
+    (message "Document is up to date"))))
+
+(defun gh/org-docs--has-resolved-comments-p ()
+  "Check if any comments are marked DONE."
+  (save-excursion
+    (goto-char (point-min))
+    (when (re-search-forward "^\\*\\* Active Comments" nil t)
+      (let ((end (save-excursion (org-end-of-subtree t) (point)))
+            (found nil))
+        (while (and (not found)
+                    (re-search-forward "^\\*\\*\\* DONE" end t))
+          (setq found t))
+        found))))
+
+(defun gh/org-docs--buffer-modified-since-push-p ()
+  "Check if buffer has been modified since last push."
+  (and (buffer-modified-p)
+       (gh/org-docs--get-last-push)))
+#+end_src
+
+Clean command:
+#+begin_src elisp
+(defun gh/org-docs-clean ()
+  "Archive resolved comments and clean metadata."
+  (interactive)
+  (unless gh/org-docs-mode
+    (user-error "gh/org-docs-mode is not enabled"))
+  
+  (let ((count 0))
+    (save-excursion
+      (goto-char (point-min))
+      (when (re-search-forward "^\\*\\* Active Comments" nil t)
+        (org-map-entries
+         (lambda ()
+           (when (string= (org-get-todo-state) "DONE")
+             (org-cut-subtree)
+             (setq count (1+ count))))
+         nil 'tree)))
+    
+    (message "Archived %d resolved comments" count)))
+#+end_src
+
+Open in browser:
+#+begin_src elisp
+(defun gh/org-docs-open-in-browser ()
+  "Open linked Google Doc in browser."
+  (interactive)
+  (let ((doc-id (gh/org-docs--get-doc-id)))
+    (if doc-id
+        (browse-url (format "https://docs.google.com/document/d/%s/edit" doc-id))
+      (user-error "No Google Doc linked to this file"))))
+#+end_src
+
+*** Testing
+- DWIM with various buffer states
+- Clean resolved comments
+- Open document in browser
+
+** Task 10: Integration Testing and Documentation
+*** Description
+End-to-end testing and user documentation:
+- Create a real test Google Document with document ID stored in repo
+- Test complete workflows (create → push → comment → pull → resolve → push)
+- Verify all supported features work correctly on the real test document
+- Document installation and setup
+- Document workflow
+- Create example org file
+- Document troubleshooting
+
+*** Dependencies
+All previous tasks
+
+*** Deliverables
+- Test document (real Google Doc) with ID stored in test-doc-id.txt in repo
+- Test suite (can be manual test plan)
+- README.org with installation instructions
+- WORKFLOW.org with usage guide
+- Example document (example.org) that syncs with test doc
+- Troubleshooting guide
+
+*** Acceptance Criteria
+- Real Google Doc exists and is accessible for testing
+- Test document ID is stored in repo for reproducible testing
+- Can complete full workflow without errors
+- All supported features tested on real document
+- Documentation is clear and complete
+- Example document demonstrates all features
+- Common issues are documented
+- Test document has comments added for pull testing
+
+*** Compliance Notes
+- MUST comply with INV-18 (Real Document Testing)
+
+*** Implementation Notes
+Test document setup:
+1. Create a Google Doc manually or via the tool
+2. Store document ID in test-doc-id.txt at repo root
+3. Add comments to the document for testing pull workflow
+4. Keep the test document as a permanent fixture for CI/manual testing
+
+Test scenarios:
+1. Create new document from scratch
+2. Push document with headings, lists, tables, images
+3. Add comments in Google Docs
+4. Pull comments
+5. Mark comments as DONE
+6. Push to resolve comments
+7. Add new content and push again
+8. Verify position map updates correctly
+
+Documentation structure:
+- README.org: Installation, quick start, configuration
+- WORKFLOW.org: Detailed workflow guide with screenshots
+- CONTRIBUTING.org: Development guide
+- TROUBLESHOOTING.org: Common issues and solutions
+
+*** Testing
+- Complete full workflow successfully
+- Verify documentation is accurate
+
+* Appendix: Data Structures
+
+** S-Expression Formats
+
+*** Push Request
+#+begin_src elisp
+(operation push
+  :data (
+    :document-id "1abc...xyz"  ; nil for new
+    :title "Document Title"
+    :content (
+      (heading :level 1 :text "Section" :custom-id "sec-intro")
+      (paragraph
+        :text "Text here"
+        :custom-id "sec-intro/para-0"
+        :formatting ((bold :start 0 :end 4)))
+      (list
+        :type unordered
+        :custom-id "sec-intro/list-0"
+        :items ("Item 1" "Item 2"))
+      (image
+        :custom-id "sec-intro/img-0"
+        :path "/tmp/diagram.png"
+        :alt-text "Diagram")
+      (table
+        :custom-id "sec-intro/table-0"
+        :rows (("H1" "H2") ("C1" "C2"))))
+    :comments-to-resolve ("comment-id-1" "comment-id-2")))
+
+; Note: Go tool reads its own TOML config from XDG paths
+; Emacs does not need to pass configuration
+#+end_src
+
+*** Push Response
+#+begin_src elisp
+(result success
+  :document-id "1abc...xyz"
+  :document-url "https://docs.google.com/document/d/1abc...xyz/edit"
+  :position-map (
+    ("sec-intro" . (:gdoc-index 1 :type heading))
+    ("sec-intro/para-0" . (:gdoc-index 2 :type paragraph))
+    ("sec-intro/list-0" . (:gdoc-index 3 :type list)))
+  :resolved-comments ("comment-id-1")
+  :timestamp "2026-01-13T14:30:00Z")
+#+end_src
+
+*** Pull Request
+#+begin_src elisp
+(operation pull
+  :data (
+    :document-id "1abc...xyz"
+    :position-map (
+      ("sec-intro" . (:gdoc-index 1 :type heading))
+      ("sec-intro/para-0" . (:gdoc-index 2 :type paragraph)))
+    :known-comment-ids ("existing-comment-id")
+    :collaborator-cache (
+      ("jane.smith@company.com" . "Jane Smith"))))
+
+; Note: Go tool reads its own TOML config from XDG paths
+#+end_src
+
+*** Pull Response
+#+begin_src elisp
+(result success
+  :document-id "1abc...xyz"
+  :comments (
+    (comment
+      :id "comment-xyz789"
+      :author-email "jane.smith@company.com"
+      :author-name "Jane Smith"
+      :text "Comment text here"
+      :created "2026-01-13T10:23:00Z"
+      :resolved nil
+      :anchor (
+        :custom-id "sec-intro"
+        :segment-id "sec-intro/para-0"
+        :start-index 15
+        :end-index 42
+        :quoted-text "text that was commented")))
+  :suggested-edits ()
+  :new-collaborators (
+    ("alice.jones@company.com" . "Alice Jones"))
+  :timestamp "2026-01-13T16:45:00Z")
+#+end_src
+
+** Org File Metadata Structure
+
+#+begin_src org
+#+TITLE: Document Title
+#+AUTHOR: Your Name
+
+# ════════════════════════════════════════════════════════════════════
+# Google Docs Sync Metadata - Managed by org2gdocs
+# Do not edit these properties manually
+#+GDOC_ID: 1abc...xyz
+#+GDOC_LAST_PUSH: [2026-01-13 Mon 14:30]
+#+GDOC_LAST_PULL: [2026-01-13 Mon 16:45]
+# ════════════════════════════════════════════════════════════════════
+
+* Introduction
+:PROPERTIES:
+:CUSTOM_ID: sec-intro
+:END:
+
+Content here.[[id:comment-xyz789][•]]
+
+* ═══════════════════════════════════════════════════════════════════ :noexport:
+# WARNING: This section is managed by org2gdocs. Do not edit manually!
+# Any manual changes will be overwritten on the next pull/push operation.
+#
+# To resolve comments: Change TODO → DONE, then run C-c g s
+# To remove resolved comments: Run C-c g c
+
+* GDOC_METADATA - DO NOT EDIT :noexport:
+
+** Active Comments
+
+*** TODO Review methodology section - Jane Smith
+:PROPERTIES:
+:COMMENT_ID: xyz789
+:COMMENT_AUTHOR: Jane Smith
+:COMMENT_EMAIL: jane.smith@company.com
+:COMMENT_DATE: [2026-01-13 Mon 10:23]
+:COMMENT_SECTION: sec-intro
+:END:
+
+#+begin_quote
+This needs more detail about the methodology
+#+end_quote
+
+[[id:comment-xyz789][← Jump to comment location]]
+
+** Position Map
+
+#+begin_src emacs-lisp :exports none :results silent
+'(("sec-intro" . (:gdoc-index 1 :type heading))
+  ("sec-intro/para-0" . (:gdoc-index 2 :type paragraph))
+  ("sec-intro/list-0" . (:gdoc-index 4 :type list)))
+#+end_src
+
+** Collaborator Cache
+
+| Email                   | Display Name |
+|-------------------------+--------------|
+| jane.smith@company.com  | Jane Smith   |
+| john.doe@company.com    | John Doe     |
+#+end_src
+
+** Default config.toml Structure
+
+Located at: ~$XDG_CONFIG_HOME/org2gdocs/config.toml~ (defaults to ~~/.config/org2gdocs/config.toml~)
+
+#+begin_src toml
+# Google API credentials file (downloaded from Google Cloud Console)
+# This is a JSON file provided by Google
+credentials_path = "~/.config/org2gdocs/credentials.json"
+
+# OAuth token storage (auto-generated after first auth)
+token_path = "~/.local/share/org2gdocs/token.json"
+
+# Debug mode (can also be enabled with --debug flag)
+debug = false
+#+end_src
+
+* Implementation Checklist
+
+- [ ] Task 1: Go Tool - OAuth Setup and S-expression Parser
+- [ ] Task 2: Go Tool - Push Operation (Document Creation and Update)
+- [ ] Task 3: Go Tool - Image Handling
+- [ ] Task 4: Go Tool - Pull Operation (Comment Retrieval)
+- [ ] Task 5: Go Tool - Comment Resolution
+- [ ] Task 6: Emacs Package - Core Infrastructure and Configuration
+- [ ] Task 7: Emacs Package - Content Conversion and Push
+- [ ] Task 8: Emacs Package - Pull Operation and Comment Integration
+- [ ] Task 9: Emacs Package - DWIM Command and Workflow Helpers
+- [ ] Task 10: Integration Testing and Documentation
