@@ -505,21 +505,23 @@ Returns nil for image-generating blocks (their output is captured separately)."
                  (clrhash counters)
                  (push sexp content)))
               ('paragraph
-               ;; Check if this paragraph is just an image link
-               (let ((image-path (gh/org-docs--paragraph-image-link element)))
-                 (if image-path
-                     ;; It's an image
-                     (let* ((key (format "%s-image" current-section-id))
+               ;; Skip paragraphs inside list items (they're handled by list processing)
+               (unless (gh/org-docs--inside-list-p element)
+                 ;; Check if this paragraph is just an image link
+                 (let ((image-path (gh/org-docs--paragraph-image-link element)))
+                   (if image-path
+                       ;; It's an image
+                       (let* ((key (format "%s-image" current-section-id))
+                              (count (gethash key counters 0)))
+                         (puthash key (1+ count) counters)
+                         (push (gh/org-docs--image-to-sexp image-path current-section-id count)
+                               content))
+                     ;; Regular paragraph
+                     (let* ((key (format "%s-para" current-section-id))
                             (count (gethash key counters 0)))
                        (puthash key (1+ count) counters)
-                       (push (gh/org-docs--image-to-sexp image-path current-section-id count)
-                             content))
-                   ;; Regular paragraph
-                   (let* ((key (format "%s-para" current-section-id))
-                          (count (gethash key counters 0)))
-                     (puthash key (1+ count) counters)
-                     (push (gh/org-docs--paragraph-to-sexp element current-section-id count)
-                           content)))))
+                       (push (gh/org-docs--paragraph-to-sexp element current-section-id count)
+                             content))))))
               ('plain-list
                (let* ((key (format "%s-list" current-section-id))
                       (count (gethash key counters 0)))
@@ -552,6 +554,13 @@ Returns nil for image-generating blocks (their output is captured separately)."
       (let ((parent-heading (org-get-heading t t t t)))
         (and parent-heading
              (string-match-p "GDOC_METADATA" parent-heading))))))
+
+(defun gh/org-docs--inside-list-p (element)
+  "Return non-nil if ELEMENT is inside a list item."
+  (let ((parent (org-element-property :parent element)))
+    (while (and parent (not (memq (org-element-type parent) '(item plain-list))))
+      (setq parent (org-element-property :parent parent)))
+    (and parent (memq (org-element-type parent) '(item plain-list)))))
 
 ;; ============================================================================
 ;; API communication

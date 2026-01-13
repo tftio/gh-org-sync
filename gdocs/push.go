@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"google.golang.org/api/docs/v1"
+	"org2gdocs/debug"
 )
 
 type Position struct {
@@ -284,6 +285,11 @@ func insertAndFillTable(ctx context.Context, c *Client, docID string, index int6
 		return index, nil
 	}
 
+	debug.Log("Table insertion: %d rows x %d cols", len(rows), cols)
+	for i, row := range rows {
+		debug.Log("  Row %d: %v", i, row)
+	}
+
 	// Step 0: Fetch the document to get the actual current end index.
 	// This handles index drift from UTF-16 calculations or structural elements.
 	doc, err := c.Docs.Documents.Get(docID).Context(ctx).Do()
@@ -329,18 +335,23 @@ func insertAndFillTable(ctx context.Context, c *Client, docID string, index int6
 	}
 
 	// Step 3: Insert cell contents.
+	debug.Log("Table found: %d rows in doc", len(tableEl.Table.TableRows))
 	cellReqs := []*docs.Request{}
 	for r, row := range rows {
 		if r >= len(tableEl.Table.TableRows) {
+			debug.Log("  Row %d: skipping (out of bounds)", r)
 			break
 		}
 		tableRow := tableEl.Table.TableRows[r]
+		debug.Log("  Row %d: %d cells in doc row", r, len(tableRow.TableCells))
 		for cidx, cellText := range row {
 			if cidx >= len(tableRow.TableCells) {
+				debug.Log("    Cell [%d][%d]: skipping (out of bounds)", r, cidx)
 				break
 			}
 			cell := tableRow.TableCells[cidx]
 			cellStart := cellStartIndex(cell)
+			debug.Log("    Cell [%d][%d]: start=%d text=%q", r, cidx, cellStart, cellText)
 			if cellStart == 0 {
 				continue
 			}
