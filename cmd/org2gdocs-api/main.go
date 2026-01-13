@@ -44,7 +44,7 @@ func main() {
 		return
 	}
 
-	handleOperation()
+	handleOperation(cfg)
 }
 
 func usage() {

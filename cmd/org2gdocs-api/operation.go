@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 
+	"org2gdocs/config"
 	"org2gdocs/debug"
+	"org2gdocs/gdocs"
 	"org2gdocs/sexp"
 )
 
-func handleOperation() {
+func handleOperation(cfg *config.Config) {
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		_ = writeErrorResult(os.Stdout, errCodeInternalError, "failed reading stdin", err)
@@ -37,8 +40,17 @@ func handleOperation() {
 		}
 	}
 
-	_ = writeErrorResult(os.Stdout, errCodeNotImplemented, fmt.Sprintf("%s not implemented", op), nil)
-	os.Exit(1)
+	switch op {
+	case "push":
+		exit := handlePush(context.Background(), cfg, data)
+		os.Exit(exit)
+	case "pull":
+		_ = writeErrorResult(os.Stdout, errCodeNotImplemented, "pull not implemented", nil)
+		os.Exit(1)
+	default:
+		_ = writeErrorResult(os.Stdout, errCodeInvalidRequest, fmt.Sprintf("unknown operation: %s", op), nil)
+		os.Exit(1)
+	}
 }
 
 func parseOperation(expr sexp.Sexp) (op string, data sexp.Sexp, err error) {
@@ -70,4 +82,8 @@ func parseOperation(expr sexp.Sexp) (op string, data sexp.Sexp, err error) {
 	}
 
 	return string(nameSym), nil, nil
+}
+
+func newGdocsClient(ctx context.Context, cfg *config.Config) (*gdocs.Client, error) {
+	return gdocs.NewClient(ctx, cfg)
 }

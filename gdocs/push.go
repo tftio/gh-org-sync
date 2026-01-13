@@ -1,0 +1,364 @@
+package gdocs
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"google.golang.org/api/docs/v1"
+)
+
+type Position struct {
+	GdocIndex int64
+	Type      ContentType
+}
+
+type PushResult struct {
+	DocumentID  string
+	DocumentURL string
+	PositionMap map[string]Position
+}
+
+func PushDocument(ctx context.Context, c *Client, docID string, title string, content []Content) (*PushResult, error) {
+	existingDoc := docID != ""
+
+	if docID == "" {
+		doc, err := c.Docs.Documents.Create(&docs.Document{Title: title}).Context(ctx).Do()
+		if err != nil {
+			return nil, err
+		}
+		docID = doc.DocumentId
+	}
+
+	positionMap := make(map[string]Position, len(content))
+
+	index := int64(1) // start-of-document (UTF-16 code units)
+	pending := []*docs.Request{}
+
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		_, err := c.Docs.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+			Requests: pending,
+		}).Context(ctx).Do()
+		pending = pending[:0]
+		return err
+	}
+
+	if existingDoc {
+		endIndex, err := getDocumentEndIndex(ctx, c, docID)
+		if err != nil {
+			return nil, err
+		}
+
+		// Keep the final newline/paragraph boundary by deleting up to endIndex-1.
+		if endIndex > 1 {
+			deleteEnd := endIndex - 1
+			if deleteEnd > 1 {
+				pending = append(pending, &docs.Request{
+					DeleteContentRange: &docs.DeleteContentRangeRequest{
+						Range: &docs.Range{StartIndex: 1, EndIndex: deleteEnd},
+					},
+				})
+			}
+		}
+	}
+
+	for _, item := range content {
+		if item.CustomID != "" {
+			positionMap[item.CustomID] = Position{
+				GdocIndex: index,
+				Type:      item.Type,
+			}
+		}
+
+		switch item.Type {
+		case ContentHeading:
+			reqs, newIndex, err := buildHeadingRequests(index, item.Level, item.Text)
+			if err != nil {
+				return nil, err
+			}
+			pending = append(pending, reqs...)
+			index = newIndex
+
+		case ContentParagraph:
+			reqs, newIndex, err := buildParagraphRequests(index, item.Text, item.Formatting)
+			if err != nil {
+				return nil, err
+			}
+			pending = append(pending, reqs...)
+			index = newIndex
+
+		case ContentList:
+			reqs, newIndex, err := buildListRequests(index, item.ListType, item.Items)
+			if err != nil {
+				return nil, err
+			}
+			pending = append(pending, reqs...)
+			index = newIndex
+
+		case ContentTable:
+			// Tables require multiple API calls to determine cell indices.
+			if err := flush(); err != nil {
+				return nil, err
+			}
+
+			newIndex, err := insertAndFillTable(ctx, c, docID, index, item.Rows)
+			if err != nil {
+				return nil, err
+			}
+			index = newIndex
+
+		default:
+			return nil, fmt.Errorf("unsupported content type: %q", item.Type)
+		}
+	}
+
+	if err := flush(); err != nil {
+		return nil, err
+	}
+
+	return &PushResult{
+		DocumentID:  docID,
+		DocumentURL: fmt.Sprintf("https://docs.google.com/document/d/%s/edit", docID),
+		PositionMap: positionMap,
+	}, nil
+}
+
+func getDocumentEndIndex(ctx context.Context, c *Client, docID string) (int64, error) {
+	doc, err := c.Docs.Documents.Get(docID).Context(ctx).Do()
+	if err != nil {
+		return 0, err
+	}
+	return documentEndIndex(doc), nil
+}
+
+func documentEndIndex(doc *docs.Document) int64 {
+	var end int64 = 1
+	if doc.Body == nil {
+		return end
+	}
+	for _, el := range doc.Body.Content {
+		if el.EndIndex > end {
+			end = el.EndIndex
+		}
+	}
+	return end
+}
+
+func buildHeadingRequests(index int64, level int, text string) ([]*docs.Request, int64, error) {
+	if strings.TrimSpace(text) == "" {
+		text = ""
+	}
+
+	if level < 1 {
+		level = 1
+	}
+	if level > 6 {
+		level = 6
+	}
+
+	insertText := text + "\n"
+	newIndex := index + utf16LenString(insertText)
+
+	namedStyle := fmt.Sprintf("HEADING_%d", level)
+	reqs := []*docs.Request{
+		{
+			InsertText: &docs.InsertTextRequest{
+				Location: &docs.Location{Index: index},
+				Text:     insertText,
+			},
+		},
+		{
+			UpdateParagraphStyle: &docs.UpdateParagraphStyleRequest{
+				Range: &docs.Range{
+					StartIndex: index,
+					EndIndex:   newIndex,
+				},
+				ParagraphStyle: &docs.ParagraphStyle{NamedStyleType: namedStyle},
+				Fields:         "namedStyleType",
+			},
+		},
+	}
+
+	return reqs, newIndex, nil
+}
+
+func buildParagraphRequests(index int64, text string, formatting []FormatRange) ([]*docs.Request, int64, error) {
+	insertText := text + "\n"
+	newIndex := index + utf16LenString(insertText)
+
+	reqs := []*docs.Request{
+		{
+			InsertText: &docs.InsertTextRequest{
+				Location: &docs.Location{Index: index},
+				Text:     insertText,
+			},
+		},
+	}
+
+	styleReqs, err := BuildTextStyleRequests(text, index, formatting)
+	if err != nil {
+		return nil, 0, err
+	}
+	reqs = append(reqs, styleReqs...)
+
+	return reqs, newIndex, nil
+}
+
+func buildListRequests(index int64, listType ListType, items []string) ([]*docs.Request, int64, error) {
+	if len(items) == 0 {
+		return nil, index, nil
+	}
+
+	joined := strings.Join(items, "\n") + "\n"
+	newIndex := index + utf16LenString(joined)
+
+	var preset string
+	switch listType {
+	case ListOrdered:
+		preset = "NUMBERED_DECIMAL_ALPHA_ROMAN"
+	default:
+		preset = "BULLET_DISC_CIRCLE_SQUARE"
+	}
+
+	reqs := []*docs.Request{
+		{
+			InsertText: &docs.InsertTextRequest{
+				Location: &docs.Location{Index: index},
+				Text:     joined,
+			},
+		},
+		{
+			CreateParagraphBullets: &docs.CreateParagraphBulletsRequest{
+				Range: &docs.Range{
+					StartIndex: index,
+					EndIndex:   newIndex,
+				},
+				BulletPreset: preset,
+			},
+		},
+	}
+
+	return reqs, newIndex, nil
+}
+
+func insertAndFillTable(ctx context.Context, c *Client, docID string, index int64, rows [][]string) (int64, error) {
+	if len(rows) == 0 {
+		return index, nil
+	}
+
+	cols := 0
+	for _, r := range rows {
+		if len(r) > cols {
+			cols = len(r)
+		}
+	}
+	if cols == 0 {
+		return index, nil
+	}
+
+	// Step 1: Insert the table skeleton.
+	_, err := c.Docs.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{
+		Requests: []*docs.Request{
+			{
+				InsertTable: &docs.InsertTableRequest{
+					Rows:    int64(len(rows)),
+					Columns: int64(cols),
+					Location: &docs.Location{
+						Index: index,
+					},
+				},
+			},
+		},
+	}).Context(ctx).Do()
+	if err != nil {
+		return 0, err
+	}
+
+	// Step 2: Fetch the doc to find the new table and compute cell insertion
+	// indices.
+	doc, err := c.Docs.Documents.Get(docID).Context(ctx).Do()
+	if err != nil {
+		return 0, err
+	}
+
+	tableEl := findTableElement(doc, index)
+	if tableEl == nil || tableEl.Table == nil {
+		return 0, fmt.Errorf("inserted table not found at index %d", index)
+	}
+
+	// Step 3: Insert cell contents.
+	cellReqs := []*docs.Request{}
+	for r, row := range rows {
+		if r >= len(tableEl.Table.TableRows) {
+			break
+		}
+		tableRow := tableEl.Table.TableRows[r]
+		for cidx, cellText := range row {
+			if cidx >= len(tableRow.TableCells) {
+				break
+			}
+			cell := tableRow.TableCells[cidx]
+			cellStart := cellStartIndex(cell)
+			if cellStart == 0 {
+				continue
+			}
+			if strings.TrimSpace(cellText) == "" {
+				continue
+			}
+			cellReqs = append(cellReqs, &docs.Request{
+				InsertText: &docs.InsertTextRequest{
+					Location: &docs.Location{Index: cellStart},
+					Text:     cellText,
+				},
+			})
+		}
+	}
+
+	if len(cellReqs) > 0 {
+		if _, err := c.Docs.Documents.BatchUpdate(docID, &docs.BatchUpdateDocumentRequest{Requests: cellReqs}).Context(ctx).Do(); err != nil {
+			return 0, err
+		}
+	}
+
+	// Step 4: Fetch doc again to get updated end index after cell insertion.
+	doc, err = c.Docs.Documents.Get(docID).Context(ctx).Do()
+	if err != nil {
+		return 0, err
+	}
+
+	tableEl = findTableElement(doc, index)
+	if tableEl == nil {
+		return 0, fmt.Errorf("table not found after filling at index %d", index)
+	}
+
+	return tableEl.EndIndex, nil
+}
+
+func findTableElement(doc *docs.Document, startIndex int64) *docs.StructuralElement {
+	if doc.Body == nil {
+		return nil
+	}
+	for _, el := range doc.Body.Content {
+		if el.Table == nil {
+			continue
+		}
+		if el.StartIndex == startIndex {
+			return el
+		}
+	}
+	return nil
+}
+
+func cellStartIndex(cell *docs.TableCell) int64 {
+	if cell == nil {
+		return 0
+	}
+	if len(cell.Content) == 0 {
+		return 0
+	}
+	// Insert before the cell's newline in the first paragraph.
+	return cell.Content[0].StartIndex
+}
