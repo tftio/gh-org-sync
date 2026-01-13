@@ -596,21 +596,32 @@ Returns the parsed response."
          (request-str (gh/org-docs--sexp-encode request))
          (cmd (if gh/org-docs-debug-mode
                   (format "%s --debug" gh/org-docs-api-command)
-                gh/org-docs-api-command)))
+                gh/org-docs-api-command))
+         (stderr-file (make-temp-file "gh-org-docs-stderr")))
     (gh/org-docs--debug "Request:\n%s" request-str)
-    (with-temp-buffer
-      (let ((exit-code (call-process-region
-                        request-str nil
-                        shell-file-name nil t nil
-                        shell-command-switch
-                        cmd)))
-        (gh/org-docs--debug "Exit code: %d" exit-code)
-        (gh/org-docs--debug "Response:\n%s" (buffer-string))
-        (if (= exit-code 0)
-            (let ((response (gh/org-docs--sexp-decode (buffer-string))))
-              (gh/org-docs--parse-api-response response))
-          (error "API call failed with exit code %d: %s"
-                 exit-code (buffer-string)))))))
+    (unwind-protect
+        (with-temp-buffer
+          (let ((exit-code (call-process-region
+                            request-str nil
+                            shell-file-name nil
+                            (list t stderr-file)  ; stdout to buffer, stderr to file
+                            nil
+                            shell-command-switch
+                            cmd)))
+            ;; Log stderr (debug output) if present
+            (when gh/org-docs-debug-mode
+              (with-temp-buffer
+                (insert-file-contents stderr-file)
+                (when (> (buffer-size) 0)
+                  (gh/org-docs--debug "Stderr:\n%s" (buffer-string)))))
+            (gh/org-docs--debug "Exit code: %d" exit-code)
+            (gh/org-docs--debug "Response:\n%s" (buffer-string))
+            (if (= exit-code 0)
+                (let ((response (gh/org-docs--sexp-decode (buffer-string))))
+                  (gh/org-docs--parse-api-response response))
+              (error "API call failed with exit code %d: %s"
+                     exit-code (buffer-string)))))
+      (delete-file stderr-file))))
 
 (defun gh/org-docs--parse-api-response (response)
   "Parse API RESPONSE and handle errors."
