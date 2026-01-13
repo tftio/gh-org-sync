@@ -280,23 +280,39 @@ Uses iterative approach to avoid deep recursion."
 
 (defun gh/org-docs--extract-text-iter (element callback)
   "Extract text from ELEMENT, calling CALLBACK for each text fragment.
-Iterates without nesting org-element-map calls."
+Iterates without nesting org-element-map calls.
+Respects :post-blank property to preserve spacing after formatted text."
   (let ((contents (org-element-contents element)))
     (dolist (child contents)
       (cond
        ;; Plain text string
        ((stringp child)
         (funcall callback child))
-       ;; Formatting elements - descend into contents
+       ;; Formatting elements - descend into contents, then add post-blank spaces
        ((memq (org-element-type child)
-              '(bold italic underline strike-through code verbatim))
-        (gh/org-docs--extract-text-iter child callback))
-       ;; Links - use description or raw-link
+              '(bold italic underline strike-through))
+        (gh/org-docs--extract-text-iter child callback)
+        ;; Add trailing spaces based on :post-blank property
+        (let ((post-blank (org-element-property :post-blank child)))
+          (when (and post-blank (> post-blank 0))
+            (funcall callback (make-string post-blank ?\s)))))
+       ;; Code/verbatim elements store text in :value property, not contents
+       ((memq (org-element-type child) '(code verbatim))
+        (let ((value (org-element-property :value child)))
+          (when value
+            (funcall callback value)))
+        (let ((post-blank (org-element-property :post-blank child)))
+          (when (and post-blank (> post-blank 0))
+            (funcall callback (make-string post-blank ?\s)))))
+       ;; Links - use description or raw-link, then add post-blank
        ((eq (org-element-type child) 'link)
         (let ((desc (org-element-contents child)))
           (if desc
               (gh/org-docs--extract-text-iter child callback)
-            (funcall callback (org-element-property :raw-link child)))))
+            (funcall callback (org-element-property :raw-link child))))
+        (let ((post-blank (org-element-property :post-blank child)))
+          (when (and post-blank (> post-blank 0))
+            (funcall callback (make-string post-blank ?\s)))))
        ;; Nested elements (paragraphs, items, etc.) - descend
        ((and (listp child) (org-element-type child))
         (gh/org-docs--extract-text-iter child callback))))))
