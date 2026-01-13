@@ -852,13 +852,51 @@ COMMENT is (comment :id ... :text ...) - skip the symbol to get plist."
 ;; Main commands
 ;; ============================================================================
 
+(defun gh/org-docs--pull-comments-silent ()
+  "Pull comments silently without user messages.
+Used internally before push to preserve existing comments."
+  (let ((doc-id (gh/org-docs--get-doc-id)))
+    (when doc-id
+      (let* ((pos-map (gh/org-docs--get-position-map))
+             (known-ids (gh/org-docs--get-known-comment-ids))
+             (collab-cache (gh/org-docs--get-collaborator-cache))
+             (data (list :document-id doc-id
+                         :position-map (or pos-map 'nil)
+                         :known-comment-ids (or known-ids 'nil)
+                         :collaborator-cache (or collab-cache 'nil))))
+        (condition-case err
+            (let ((result (gh/org-docs--call-api 'pull data)))
+              (let ((comments (plist-get result :comments))
+                    (new-collabs (plist-get result :new-collaborators)))
+                ;; Ensure metadata section exists
+                (gh/org-docs--ensure-metadata-section)
+                ;; Process each new comment
+                (dolist (comment comments)
+                  (gh/org-docs--insert-comment-marker comment)
+                  (gh/org-docs--create-comment-todo comment))
+                ;; Update collaborator cache
+                (gh/org-docs--update-collaborator-cache new-collabs)
+                ;; Return number of new comments for logging
+                (length comments)))
+          (error
+           (gh/org-docs--debug "Silent pull failed: %s" err)
+           0))))))
+
 (defun gh/org-docs-push ()
-  "Push current buffer to Google Docs."
+  "Push current buffer to Google Docs.
+If a document is already linked, pulls comments first to ensure none are lost
+when content is replaced."
   (interactive)
   (unless gh/org-docs-mode
     (user-error "Enable gh/org-docs-mode first"))
   (unless (derived-mode-p 'org-mode)
     (user-error "This command only works in org-mode buffers"))
+
+  ;; Auto-pull comments before push to ensure none are lost
+  ;; (push replaces document content, which orphans comment anchors)
+  (when (gh/org-docs--get-doc-id)
+    (message "Pulling comments before push...")
+    (gh/org-docs--pull-comments-silent))
 
   ;; Execute image-generating blocks first
   (gh/org-docs--execute-image-blocks)
