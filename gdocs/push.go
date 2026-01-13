@@ -110,6 +110,17 @@ func PushDocument(ctx context.Context, c *Client, docID string, title string, co
 			}
 			index = newIndex
 
+		case ContentImage:
+			if err := flush(); err != nil {
+				return nil, err
+			}
+
+			newIndex, err := insertImage(ctx, c, docID, index, item.ImagePath, item.AltText)
+			if err != nil {
+				return nil, err
+			}
+			index = newIndex
+
 		default:
 			return nil, fmt.Errorf("unsupported content type: %q", item.Type)
 		}

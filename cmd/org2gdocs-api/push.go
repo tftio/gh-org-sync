@@ -222,7 +222,25 @@ func decodeContentItem(expr sexp.Sexp) (gdocs.Content, error) {
 		}, nil
 
 	case gdocs.ContentImage:
-		return gdocs.Content{}, fmt.Errorf("image content requires Task 3")
+		customID, err := decodeString(props[sexp.Symbol(":custom-id")])
+		if err != nil {
+			return gdocs.Content{}, fmt.Errorf("image :custom-id: %w", err)
+		}
+		path, err := decodeString(props[sexp.Symbol(":path")])
+		if err != nil {
+			return gdocs.Content{}, fmt.Errorf("image :path: %w", err)
+		}
+		altText, err := decodeOptionalString(props[sexp.Symbol(":alt-text")])
+		if err != nil {
+			return gdocs.Content{}, fmt.Errorf("image :alt-text: %w", err)
+		}
+
+		return gdocs.Content{
+			Type:      contentType,
+			CustomID:  customID,
+			ImagePath: path,
+			AltText:   altText,
+		}, nil
 
 	default:
 		return gdocs.Content{}, fmt.Errorf("unsupported content type: %q", contentType)
