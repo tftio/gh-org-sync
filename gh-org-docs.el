@@ -546,14 +546,34 @@ Returns nil for image-generating blocks (their output is captured separately)."
       nil nil 'first-match)
     (nreverse content)))
 
+(defun gh/org-docs--excluded-heading-p (heading-text)
+  "Return non-nil if HEADING-TEXT should be excluded from push."
+  (and heading-text
+       (or (string-match-p "GDOC_METADATA" heading-text)
+           (string-match-p "^=+$" heading-text)  ; Separator lines
+           (string-match-p "Local Variables" heading-text))))
+
 (defun gh/org-docs--in-metadata-section-p (element)
-  "Return non-nil if ELEMENT is inside the GDOC_METADATA section."
-  (let ((begin (org-element-property :begin element)))
-    (save-excursion
-      (goto-char begin)
-      (let ((parent-heading (org-get-heading t t t t)))
-        (and parent-heading
-             (string-match-p "GDOC_METADATA" parent-heading))))))
+  "Return non-nil if ELEMENT should be excluded from push.
+Excludes GDOC_METADATA section, separator headings, Local Variables, and
+any section with :noexport: tag."
+  (or
+   ;; For headlines, check if it's an excluded heading or has :noexport:
+   (when (eq (org-element-type element) 'headline)
+     (or (member "noexport" (org-element-property :tags element))
+         (gh/org-docs--excluded-heading-p
+          (org-element-property :raw-value element))))
+   ;; For all elements, check if inside an excluded section
+   (let ((begin (org-element-property :begin element)))
+     (save-excursion
+       (goto-char begin)
+       (let ((found-excluded nil))
+         (while (and (not found-excluded)
+                     (org-up-heading-safe))
+           (when (or (member "noexport" (org-get-tags))
+                     (gh/org-docs--excluded-heading-p (org-get-heading t t t t)))
+             (setq found-excluded t)))
+         found-excluded)))))
 
 (defun gh/org-docs--inside-list-p (element)
   "Return non-nil if ELEMENT is inside a list item."
