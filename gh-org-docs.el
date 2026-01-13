@@ -5,7 +5,9 @@
 ;; Author: James Felix Black
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "30.1") (org "9.7"))
-;; Keywords: org-mode, google-docs, collaboration
+;; Keywords: outlines, docs, collaboration
+;; URL: https://github.com/jfb/gh-org-sync
+;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
 ;; Sync org-mode documents with Google Docs for collaboration.
